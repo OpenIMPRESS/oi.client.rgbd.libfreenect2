@@ -6,7 +6,7 @@ find_path(ASIO_INCLUDE_DIRS
   asio.hpp
   DOC "Found asio include directory"
   PATHS
-    "${STREAMER_DEPENDS_DIR}/asio/asio"
+    "${asio_ROOT_DIR}/asio"
 	"/usr/include" "/usr/local"
 	"/opt/local"
   PATH_SUFFIXES

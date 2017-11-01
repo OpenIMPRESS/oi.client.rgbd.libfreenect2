@@ -18,14 +18,15 @@
 using namespace std;
 using namespace chrono;
 using asio::ip::udp;
+using namespace oi::core::network;
 
 bool stream_shutdown = false;
 void sigint_handler(int s) {
 	stream_shutdown = true;
 }
 
-asio::io_service io_service;
-IMPRESS_UDPClient client(io_service);
+asio::io_service io_service_;
+UDPConnector client(io_service_);
 
 bool kinect_paused = false;
 libfreenect2::Freenect2Device *devtopause;

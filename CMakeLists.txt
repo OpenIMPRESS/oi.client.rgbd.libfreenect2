@@ -15,15 +15,11 @@ ENDIF()
 PROJECT(oi.client.rgbd.libfreenect2)
 SET(CMAKE_CXX_STANDARD 11)
 
-MESSAGE(${freenect2_ROOT_DIR})
-
-SET(freenect2_ROOT_DIR ${MY_DIR}/../libfreenect2 CACHE STRING "Root location of libfreenect2 source.")
-
-MESSAGE(${freenect2_ROOT_DIR})
+SET(freenect2_ROOT_DIR ${MY_DIR}/../libfreenect2 CACHE STRING "Root folder of libfreenect2 source.")
+SET(asio_ROOT_DIR "${MY_DIR}/../asio" CACHE STRING "Root folder of asio source.")
 
 SET(MY_DIR ${PROJECT_SOURCE_DIR})
 SET(DEPENDS_DIR "${MY_DIR}${freenect2_ROOT_DIR}/depends" CACHE STRING "libfreenect2 Dependency directory")
-SET(STREAMER_DEPENDS_DIR "${MY_DIR}/depends" CACHE STRING "oi.client.rgbd.libfreenect2 Dependency directory")
 
 OPTION(ENABLE_OPENGL "Enable OpenGL support" ON)
 
