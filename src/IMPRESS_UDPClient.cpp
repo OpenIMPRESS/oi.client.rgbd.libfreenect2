@@ -11,13 +11,15 @@
 using json = nlohmann::json;
 
 using asio::ip::udp;
+using asio::ip::tcp;
 using namespace std::chrono;
 
 class IMPRESS_UDPClient
 {
 public:
 	IMPRESS_UDPClient(asio::io_service& io_service) : io_service_(io_service), socket_(io_service, udp::endpoint(udp::v4(), 0)) {
-		
+        asio::socket_base::send_buffer_size option_set(65507);
+        socket_.set_option(option_set);
 	}
 
 	void init(std::string _socketID, std::string _UID, bool _isSender, const std::string& host, const std::string& port) {
@@ -57,7 +59,6 @@ public:
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		}
-		_updateRunning = false;
 	}
 
 	void SendData(unsigned char* data, size_t size) {
@@ -75,8 +76,10 @@ public:
 	void exit() {
 		_listenRunning = false;
 		_updateRunning = false;
-		_listenThread.join();
-		_updateThread.join();
+        
+        socket_.close(); // stop current transmissions (otherwise thread doesn't want to end).
+        _updateThread.join();
+        _listenThread.join();
 	}
 
 	~IMPRESS_UDPClient()
@@ -88,16 +91,15 @@ public:
 		std::string _localIP = "noLocalIP";
 		try {
 			asio::io_service netService;
-			udp::resolver   resolver(netService);
-			udp::resolver::query query(udp::v4(), "8.8.8.8", "");
-			udp::resolver::iterator endpoints = resolver.resolve(query);
-			udp::endpoint ep = *endpoints;
-			udp::socket socket(netService);
+            tcp::resolver resolver(netService);
+			tcp::resolver::query query(tcp::v4(), "google.com", "80");
+			tcp::resolver::iterator endpoints = resolver.resolve(query);
+			tcp::endpoint ep = *endpoints;
+			tcp::socket socket(netService);
 			socket.connect(ep);
 			asio::ip::address addr = socket.local_endpoint().address();
 			_localIP = addr.to_string();
-		}
-		catch (std::exception& e) {
+		} catch (std::exception& e) {
 			std::cerr << "Could not deal with socket. Exception: " << e.what() << std::endl;
 		}
 		return _localIP;
@@ -160,7 +162,6 @@ private:
 				//std::cerr << "Exception while receiving: " << e.what() << std::endl;
 			}
 		}
-		_listenRunning = false;
     }
 
 	void HandleReceivedData(char* data, int len) {
