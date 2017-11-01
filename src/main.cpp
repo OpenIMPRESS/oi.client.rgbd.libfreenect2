@@ -13,7 +13,7 @@
 
 #include <asio.hpp>
 #include <turbojpeg.h>
-#include "IMPRESS_UDPClient.cpp"
+#include "oi.plugin.network.cpp"
 
 using namespace std;
 using namespace chrono;
