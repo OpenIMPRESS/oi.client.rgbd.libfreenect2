@@ -10,9 +10,6 @@ Stream KinectV2 data using libfreenect2 through UDP accross the network.
    - Follow the instructions to compile it on your platform
  - Get a copy of asio:
    - git clone https://github.com/chriskohlhoff/asio.git
- - Make a folder oi.client.rgbd.libfreenect2/depends and clone asio into it:
-   - cd oi.client.rgbd.libfreenect2 && mkdir depends && cd depends
-   - git clone https://github.com/chriskohlhoff/asio.git
  - make a folder "build" in oi.client.rgbd.libfreenect2
    - cd build
    - cmake -G "Visual Studio 14 2015 Win64" -D asio\_ROOT\_DIR="path/to/asio" -D freenect2\_ROOT\_DIR="path/to/libfreenect2" ..
@@ -26,8 +23,6 @@ Stream KinectV2 data using libfreenect2 through UDP accross the network.
    - Follow the instructions to compile it on your platform
  - Get a copy of asio:
    - git clone https://github.com/chriskohlhoff/asio.git
- - Make a folder oi.client.rgbd.libfreenect2/depends and clone asio into it:
-   - cd oi.client.rgbd.libfreenect2 && mkdir depends && cd depends
  - Go back to oi.client.rgbd.libfreenect2 folder and make a "build" folder, then cmake...:
    - cd build
    - cmake -G Xcode -D asio\_ROOT\_DIR="path/to/asio" -D freenect2\_ROOT\_DIR="path/to/libfreenect2" ..

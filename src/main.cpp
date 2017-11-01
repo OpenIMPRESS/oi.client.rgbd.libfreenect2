@@ -13,7 +13,7 @@
 
 #include <asio.hpp>
 #include <turbojpeg.h>
-#include "oi.plugin.network.cpp"
+#include "UDPConnector.cpp"
 
 using namespace std;
 using namespace chrono;
