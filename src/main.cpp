@@ -38,11 +38,14 @@ void sigusr1_handler(int s) {
 }
 
 ofstream dumpStream;
+ifstream loadStream;
+
 int dumpFrame(libfreenect2::Frame * regdepth, libfreenect2::Frame * regrgb, uint32_t sequence);
 
 int streamFrame(libfreenect2::Frame * regdepth, libfreenect2::Frame * regrgb, uint32_t sequence);
 int openAndStream(string serial, string pipelineId);
 int sendConfig();
+int replayFrame(uint32_t sequence);
 
 struct IMAGE_DATA_HEADER {
     unsigned char msgType = 0x03;   // 00 // 0x03 = Depth; 0x04 = Color
@@ -53,7 +56,6 @@ struct IMAGE_DATA_HEADER {
     unsigned short startRow = 0;    // 08-09
     unsigned short endRow = 0;      // 10-11
 };
-
 struct CONFIG_MSG {
     unsigned char msgType = 0x01;    // 00
     unsigned char deviceID = 0x00;   // 01
@@ -96,6 +98,15 @@ string sendThrottleValue = "10";
 string pipelineValue = "opencl"; // opengl
 string maxDepthValue = "10";
 string fileDumpValue = ""; // dump.bin
+
+int currentFrame = 0;
+int frameLoopLength = 30*5;
+bool replay = false;
+
+milliseconds prevRecFrame;
+milliseconds prevReplayFrame;
+milliseconds nextReplayFrame;
+uint32_t lastSequence;
 
 int main(int argc, char *argv[]) {
 	string socketIDParam("-i");
@@ -211,6 +222,7 @@ int main(int argc, char *argv[]) {
 
 	return openAndStream(serialValue, pipelineValue);
 }
+
 int openAndStream(string serial, string pipelineId) {
 	libfreenect2::Freenect2 freenect2;
 	libfreenect2::Freenect2Device *dev = 0;
@@ -310,28 +322,72 @@ int openAndStream(string serial, string pipelineId) {
         dumpStream.open(fileDumpValue, ios::binary | ios::out | ios::trunc);
     }
     
+    prevRecFrame = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
 	while (!stream_shutdown) {
-
-		milliseconds ms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-
-		if (!listener.waitForNewFrame(frames, 5 * 1000)) {
-			return -1;
-		}
-
-		libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
-		libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
-
-		registration->apply(rgb, depth, &undistorted, &registered);
+        milliseconds ms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+        json msg = client.GetNewData();
+        if (msg != NULL) {
+            if (msg["param"] == "record") {
+                cout << "GOT RECORD: " << msg["value"] << endl;
+            }
+        }
         
-		if (streamFrame(&undistorted, &registered, rgb->sequence) == -1) {
-			stream_shutdown = true;
-		}
+        
+        if (!replay) {
+            if (!listener.waitForNewFrame(frames, 5 * 1000)) {
+                return -1;
+            }
 
-		fpsCounter++;
-		ms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+            libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
+            libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
+
+            registration->apply(rgb, depth, &undistorted, &registered);
+            
+            if (streamFrame(&undistorted, &registered, rgb->sequence) == -1) {
+                stream_shutdown = true;
+            }
+            
+            if (fileDumpValue.length() > 0) {
+                //cout << "REC FRAME " << currentFrame << " OF " << frameLoopLength << endl;
+            }
+            lastSequence = rgb->sequence;
+            currentFrame++;
+            fpsCounter++;
+        }
+        
+        if (replay && nextReplayFrame <= ms) {
+            replayFrame(lastSequence+currentFrame+1);
+            
+            if (fileDumpValue.length() > 0) {
+                //cout << "REP FRAME " << currentFrame << " OF " << frameLoopLength << endl;
+            }
+            currentFrame++;
+            fpsCounter++;
+        }
+
+        
+        if (currentFrame >= frameLoopLength && fileDumpValue.length() > 0) {
+            replay = !replay;
+            currentFrame = 0;
+            
+            if (replay) { // we start replaying...
+                cout << ">>> Start replaying" << endl;
+                dumpStream.close();
+                dumpStream.clear();
+                loadStream.open(fileDumpValue, ios::binary | ios::in);
+                nextReplayFrame = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+            } else {
+                cout << ">>> Start recording" << endl;
+                loadStream.close();
+                loadStream.clear();
+                dumpStream.open(fileDumpValue, ios::binary | ios::out | ios::trunc);
+                // close file and open it with writer;
+                prevRecFrame = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+            }
+        }
 
 		if (lastFpsAverage + interval <= ms) {
-			lastFpsAverage = ms;
+			lastFpsAverage = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
 			cout << "Average FPS: " << fpsCounter / 2.0 << endl;
 			fpsCounter = 0;
             sendConfig();
@@ -340,7 +396,11 @@ int openAndStream(string serial, string pipelineId) {
 		listener.release(frames);
 	}
 
-    if (fileDumpValue.length() > 0) dumpStream.close();
+    if (fileDumpValue.length() > 0) {
+        dumpStream.close();
+        loadStream.close();
+    }
+    
 	dev->stop();
 	dev->close();
 	delete registration;
@@ -365,7 +425,58 @@ int sendConfig() {
     return 0;
 }
 
+
+int replayFrame(uint32_t seq) {
+    milliseconds now = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    long unsigned int delta = 0;
+    long unsigned int rgbLength = 0;
+    long unsigned int depthLength = 0;
+    long unsigned int npackets = 0;
+    
+    // parse delta
+    loadStream.read(reinterpret_cast<char *>(&delta), sizeof(delta));
+    //cout << "delta: " << delta << endl;
+    
+    // parse rgb image size
+    loadStream.read(reinterpret_cast<char *>(&rgbLength), sizeof(rgbLength));
+    //cout << "rgbLength: " << rgbLength << endl;
+    
+    // read rgb into memory
+    loadStream.read((char *) frameStreamBufferColor, rgbLength); //&frameStreamBufferColor[0]?
+    
+    // set sequence number in header
+    
+    // send rgb data
+    client.SendData(frameStreamBufferColor, rgbLength);
+    
+    // parse number of depth packets
+    loadStream.read(reinterpret_cast<char *>(&npackets), sizeof(npackets));
+    //cout << "npackets: " << npackets << endl;
+    
+    // for each packet...
+    for (int i = 0; i < npackets; i++) {
+        // parse depth image size
+        loadStream.read(reinterpret_cast<char *>(&depthLength), sizeof(depthLength));
+        ///cout << "Packet " << i << ", depthLength: " << depthLength << endl;
+        
+        // read depth into memory
+        loadStream.read((char *) frameStreamBufferDepth, depthLength);
+        
+        // set sequence number in header
+        
+        // send depth data
+        client.SendData(frameStreamBufferDepth, depthLength);
+    }
+
+    nextReplayFrame = now+milliseconds(delta);
+    return 0;
+}
+
 int streamFrame(libfreenect2::Frame * regdepth, libfreenect2::Frame * regrgb, uint32_t sequence) {
+    milliseconds now = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    milliseconds delta = now-prevRecFrame;
+    prevRecFrame = now;
+    
     img_header.sequence = sequence;
 
     // Send color data first...
@@ -387,21 +498,38 @@ int streamFrame(libfreenect2::Frame * regdepth, libfreenect2::Frame * regrgb, ui
 	//cout << "JPEG Size: " << _jpegSize << "\n";
 	//memcpy(&frameStreamBufferColor[headerSize], _compressedImage, _jpegSize);
 
-    if (fileDumpValue.length() > 0) dumpStream.write((const char*) &_jpegSize, sizeof(_jpegSize));
-    if (fileDumpValue.length() > 0) dumpStream.write((const char*) _compressedImage, _jpegSize);
+    long unsigned int colorDataSize = headerSize + _jpegSize;
     
 	try {
-		client.SendData(frameStreamBufferColor, headerSize + _jpegSize);
+        client.SendData(frameStreamBufferColor, colorDataSize);
 	} catch (exception& e) {
 		cerr << "Exception stream RGB Frame: " << e.what() << "\n";
 	}
+    
+    // deltaMS sizeRGB RGB sizeDepth DEPTH
 
-	//tjFree(_compressedImage);
+    if (fileDumpValue.length() > 0 && !replay) {
+        long unsigned int deltaValue = delta.count();
+        //cout << "frame" << currentFrame << " delta:" << deltaValue;
+        //cout << " rgbLength:" << colorDataSize;
+        
+        dumpStream.write((const char*) &deltaValue, sizeof(deltaValue));
+        dumpStream.write((const char*) &colorDataSize, sizeof(colorDataSize));
+        dumpStream.write((const char*) frameStreamBufferColor, colorDataSize);
+    }
+    
 	tjDestroy(_jpegCompressor);
 	
 
 	// Send Depth
 	img_header.msgType = 0x03;
+    
+    unsigned long int npackets = (regdepth->height + linesPerMessage - 1) / linesPerMessage; // round up division
+    if (fileDumpValue.length() > 0 && !replay) {
+        dumpStream.write((const char*) &npackets, sizeof(npackets));
+        //cout << " npackets:" << npackets << endl;
+    }
+    
 	for (unsigned int startRow = 0; startRow < regdepth->height; startRow += linesPerMessage) {
 
 		size_t endRow = startRow + linesPerMessage;
@@ -437,12 +565,16 @@ int streamFrame(libfreenect2::Frame * regdepth, libfreenect2::Frame * regrgb, ui
 		//stb_compress_dxt(&frameStreamBuffer[writeOffset], &regrgb->data[readOffset], 512, (int)totalLines, 0);
 
 		try {
-			client.SendData(frameStreamBufferDepth, writeOffset);
+            client.SendData(frameStreamBufferDepth, writeOffset);
 		} catch (exception& e) {
 			cerr << "Exception stream Depth frame: " << e.what() << "\n";
         }
+        long unsigned int depthDataSize = writeOffset;
+        if (fileDumpValue.length() > 0 && !replay) {
+            dumpStream.write((const char*) &depthDataSize, sizeof(depthDataSize));
+            dumpStream.write((const char*) frameStreamBufferDepth, depthDataSize);
+        }
         
-        if (fileDumpValue.length() > 0) dumpStream.write((const char*) frameStreamBufferDepth, writeOffset);
 		//this_thread::sleep_for(chrono::microseconds(sendThrottle));
 	}
 

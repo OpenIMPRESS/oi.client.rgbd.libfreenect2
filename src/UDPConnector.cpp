@@ -16,9 +16,12 @@ namespace oi { namespace core { namespace network {
     class UDPConnector {
         
     public:
+        std::queue<json> msgQueue;
+        
         UDPConnector(asio::io_service& io_service) : io_service_(io_service), socket_(io_service, udp::endpoint(udp::v4(), 0)) {
             asio::socket_base::send_buffer_size option_set(65507);
             socket_.set_option(option_set);
+            
         }
 
         void init(std::string _socketID, std::string _UID, bool _isSender, const std::string& host, const std::string& port) {
@@ -34,6 +37,17 @@ namespace oi { namespace core { namespace network {
             localIP = getLocalIP();
             _listenThread = std::thread(&UDPConnector::DataListener, this);
             _updateThread = std::thread(&UDPConnector::update, this);
+        }
+        
+        // TODO: Not threadsafe!
+        json GetNewData() {
+            if (msgQueue.size() < 1) {
+                return NULL;
+            } else {
+                json result = msgQueue.front();
+                msgQueue.pop();
+                return result;
+            }
         }
 
         void update() {
@@ -103,6 +117,7 @@ namespace oi { namespace core { namespace network {
             std::stringstream ss;
             ss << "d{\"packageType\":\"register\",\"socketID\":\"" << socketID << "\",\"isSender\":" << (std::string)(isSender ? "true" : "false") << ",\"localIP\":\"" << localIP << "\",\"UID\":\"" << UID << "\"}";
             std::string json = ss.str();
+            std::cout << "REGISTER" << std::endl;
             _sendData(json, serverEndpoint_);
         }
 
@@ -144,16 +159,16 @@ namespace oi { namespace core { namespace network {
         }
 
         void DataListener() {
-            const std::size_t size = 65536;
+            const std::size_t size = 65507;
             char data[size];
             _listenRunning = true;
             while (_listenRunning) {
                 try {
+                    std::cout << "receive..." << std::endl;
                     int len = socket_.receive(asio::buffer(data, size));
                     HandleReceivedData(data, len);
-                }
-                catch (std::exception& e) {
-                    //std::cerr << "Exception while receiving: " << e.what() << std::endl;
+                } catch (std::exception& e) {
+                    std::cerr << "Exception while receiving: " << e.what() << std::endl;
                 }
             }
         }
@@ -180,6 +195,26 @@ namespace oi { namespace core { namespace network {
                     lastReceivedHB = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
                     connected = true;
                 }
+            } else if (magicByte == 20) {
+                uint32_t packageSequenceID = 0;
+                uint32_t partsAm = 0;
+                uint32_t currentPart = 0;
+                unsigned int bytePos = 1;
+                memcpy(&packageSequenceID, &data[bytePos], sizeof(packageSequenceID));
+                bytePos += sizeof(packageSequenceID);
+                memcpy(&partsAm, &data[bytePos], sizeof(partsAm));
+                bytePos += sizeof(partsAm);
+                memcpy(&currentPart, &data[bytePos], sizeof(currentPart));
+                bytePos += sizeof(currentPart);
+                std::cout << packageSequenceID << " " << partsAm << " " << currentPart << std::endl;
+                json j = json::parse(&data[bytePos], &data[len]);
+                std::cout << j << std::endl;
+                msgQueue.push(j);
+                while (msgQueue.size() > 10) {
+                    msgQueue.pop();
+                }
+            } else {
+                std::cout << "Unknown msg type: " << magicByte << std::endl;
             }
         }
     };
