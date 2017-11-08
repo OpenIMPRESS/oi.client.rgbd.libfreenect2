@@ -62,8 +62,6 @@ namespace oi { namespace core { namespace rgbd {
 		dc->_data_end = data_len;
 		client->QueueForSending(&dc);
 		return data_len;
-
-		//return client->SendData((unsigned char*)config_msg_buf, sizeof(stream_config));
 	}
 
 	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata) {

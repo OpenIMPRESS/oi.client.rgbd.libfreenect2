@@ -11,12 +11,12 @@ namespace oi { namespace core { namespace rgbd {
 	public:
 		void Parse(int argc, char *argv[]);
 
-		bool useMatchMaking = false;
+		bool useMatchMaking = true;
 		std::string socketID = "kinect1";
-		std::string remoteHost = "127.0.0.1";
-		int remotePort = 10101; // overwrite if mm=true;
-		int listenPort = 10102; // if mm=true, don't use this default value
-		std::string deviceSerial = "";
+		std::string remoteHost = "mm.openimpress.org";//"127.0.0.1";
+		int remotePort = 6312;//10101; // overwrite if mm=true;
+		int listenPort = 0;//10102; // if mm=true, don't use this default value
+		std::string deviceSerial = "038994245147";
 		std::string pipeline = "cuda";
 		std::string fileDump = "";
 		float maxDepth = 8.0f;

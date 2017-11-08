@@ -14,12 +14,22 @@ int main(int argc, char *argv[]) {
 	oi::core::rgbd::StreamerConfig cfg;
 	cfg.Parse(argc, argv);
 	std::cout << "CFG: " << cfg.listenPort << " " << cfg.remotePort << " " << cfg.remoteHost << std::endl;
-	oi::core::network::UDPBase client(cfg.listenPort, cfg.remotePort, cfg.remoteHost, io_service_);
-	client.Init(1024, 32, 65506, 32);
 
-	oi::core::rgbd::LibFreenect2Streamer lf2stream(cfg, &client);
-	lf2stream.Run();
-	lf2stream.Exit();
+	if (cfg.useMatchMaking) {
+		oi::core::network::UDPConnector client(cfg.listenPort, cfg.remotePort, cfg.remoteHost, io_service_);
+		client.Init(cfg.socketID, cfg.deviceSerial, true, 1024, 32, 65506, 32);
+		oi::core::rgbd::LibFreenect2Streamer lf2stream(cfg, &client);
+		lf2stream.Run();
+		lf2stream.Exit();
+	} else {
+		oi::core::network::UDPBase client(cfg.listenPort, cfg.remotePort, cfg.remoteHost, io_service_);
+		client.Init(1024, 32, 65506, 32);
+
+		oi::core::rgbd::LibFreenect2Streamer lf2stream(cfg, &client);
+		lf2stream.Run();
+		lf2stream.Exit();
+	}
+
 
 	system("pause");
 }

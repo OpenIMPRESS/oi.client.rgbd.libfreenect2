@@ -7,44 +7,34 @@ namespace oi { namespace core { namespace network {
 	using namespace std;
     using namespace chrono;
 
-
-	UDPBase::UDPBase(int listenPort, int sendPort, std::string sendHost, asio::io_service & io_service) 
-		: io_service_(io_service), socket_(io_service, udp::endpoint(udp::v4(), listenPort)), resolver_(io_service) {
-		this->listenPort = listenPort;
-		this->sendPort = sendPort;
-		this->sendHost = sendHost;
-		asio::socket_base::send_buffer_size option_set(65507);
-		this->socket_.set_option(option_set);
-		this->endpoint_ = * resolver_.resolve(udp::v4(), this->sendHost, to_string(this->sendPort));
+	UDPConnector::UDPConnector(int listenPort, int sendPort, std::string sendHost, asio::io_service& io_service) : UDPBase(listenPort, sendPort, sendHost, io_service) {
 	}
 
-	bool UDPBase::Init(size_t receive_buffer_size, int receive_containers, size_t send_buffer_size, int send_containers) {
-		for (int i = 0; i < receive_containers; i++) {
-			DataContainer * dc = new DataContainer(i, receive_buffer_size);
-			unused_receive.push(dc);
-		}
+	bool UDPConnector::Init(std::string sid, std::string guid, bool is_sender,
+		size_t receive_buffer_size, int receive_containers, size_t send_buffer_size, int send_containers) {
+		UDPBase::Init(receive_buffer_size, receive_containers, send_buffer_size, send_containers);
+		remote_endpoint_ = endpoint_;
+		endpoint_ = asio::ip::udp::endpoint();
+		registerInterval = (milliseconds)2000;
+		HBInterval = (milliseconds)2000;
+		connectionTimeout = (milliseconds)5000;
+		lastReceivedHB = (milliseconds)0;
+		lastRegister = (milliseconds)0;
+		lastSentHB = (milliseconds)0;
+		_connected = false;
 
-		for (int i = 0; i < send_containers; i++) {
-			DataContainer * dc = new DataContainer(i, send_buffer_size);
-			unused_send.push(dc);
-		}
+		this->socketID = sid;
+		this->guid = guid;
+		this->is_sender = is_sender;
 
-		listen_thread = new std::thread(&UDPBase::DataListener, this);
-		send_thread = new std::thread(&UDPBase::DataSender, this);
+		localIP = get_local_ip();
+		update_thread = new std::thread(&UDPConnector::Update, this);
+
 		return true;
 	}
 
-
-	int UDPBase::SendData(unsigned char* data, size_t size) {
-		return SendData(data, size, endpoint_);
-	}
-
-	int UDPBase::SendData(unsigned char* data, size_t size, udp::endpoint ep) {
-		std::unique_lock<std::mutex> lk(send_mutex);
-		return _SendData(data, size, ep);
-	}
-
-	int UDPBase::_SendData(unsigned char* data, size_t size, udp::endpoint ep) {
+	int UDPConnector::_SendDataBlocking(unsigned char* data, size_t size, udp::endpoint ep) {
+		if (!_connected && ep != remote_endpoint_) return 0;
 		try {
 			return socket_.send_to(asio::buffer(data, size), ep);
 		} catch (std::exception& e) {
@@ -53,384 +43,50 @@ namespace oi { namespace core { namespace network {
 		}
 	}
 
-
-	void UDPBase::Close() {
-		running = false;
-		socket_.close();
-		listen_thread->join();
-		std::unique_lock<std::mutex> lk(send_mutex);
-		send_cv.notify_all();
-		send_cv.notify_one();
-		lk.unlock();
-		send_thread->join();
-
-		while (!queued_receive.empty()) {
-			DataContainer * dc = queued_receive.front();
-			queued_receive.pop();
-			delete dc;
-		}
-
-		while (!unused_receive.empty()) {
-			DataContainer * dc = unused_receive.front();
-			unused_receive.pop();
-			delete dc;
-		}
-
-		while (!queued_receive.empty()) {
-			DataContainer * dc = queued_send.front();
-			queued_send.pop();
-			delete dc;
-		}
-
-		while (!unused_receive.empty()) {
-			DataContainer * dc = unused_send.front();
-			unused_send.pop();
-			delete dc;
-		}
-
-	}
-
-
-	bool UDPBase::GetFreeReceiveContainer(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(listen_mutex);
-		if (unused_receive.empty()) return false;
-		*container = unused_receive.front();
-		unused_receive.pop();
-		return true;
-	}
-
-	void UDPBase::QueueForReading(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(listen_mutex);
-		queued_receive.push(*container);
-		*container = NULL;
-		// ... could notify a processer thread here?
-	}
-
-	bool UDPBase::DequeueForReading(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(listen_mutex);
-		if (queued_receive.empty()) return false;
-		*container = queued_receive.front();
-		queued_receive.pop();
-		return true;
-	}
-
-	void UDPBase::ReleaseForReceiving(DataContainer ** container) {
-		if (*container == NULL) return;
-		std::unique_lock<std::mutex> lk(listen_mutex);
-		unused_receive.push(*container);
-		*container = NULL;
-	}
-
-
-	bool UDPBase::GetFreeWriteContainer(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(send_mutex);
-		if (unused_send.empty()) return false;
-		*container = unused_send.front();
-		unused_send.pop();
-		return true;
-	}
-
-	void UDPBase::QueueForSending(DataContainer ** container, udp::endpoint ep) {
-		std::unique_lock<std::mutex> lk(send_mutex);
-		(*container)->_endpoint = ep;
-		queued_send.push(*container);
-		*container = NULL;
-		send_cv.notify_one();
-	}
-
-	void UDPBase::QueueForSending(DataContainer ** container) {
-		QueueForSending(container, endpoint_);
-	}
-
-	bool UDPBase::DequeueForSending(DataContainer ** container) {
-		//std::unique_lock<std::mutex> lk(send_mutex);
-		if (queued_send.empty()) return false;
-		*container = queued_send.front();
-		queued_send.pop();
-		return true;
-	}
-
-	void UDPBase::ReleaseForWriting(DataContainer ** container) {
-		if (*container == NULL) return;
-		//std::unique_lock<std::mutex> lk(send_mutex);
-		unused_send.push(*container);
-		*container = NULL;
-	}
-
-	unsigned int DataContainer::header_start() {
-		return _header_start;
-	}
-
-	unsigned int DataContainer::data_start() {
-		return _data_start;
-	}
-
-	unsigned int DataContainer::data_end() {
-		return _data_end;
-	}
-
-	asio::ip::udp::endpoint DataContainer::endpoint() {
-		return _endpoint;
-	}
-
-	char DataContainer::packet_id() {
-		return dataBuffer[_header_start];
-	}
-
-	void UDPBase::DataSender() {
+	void UDPConnector::Update() {
 		running = true;
-		DataContainer * send_data_container;
 		while (running) {
-			std::unique_lock<std::mutex> lk(send_mutex);
-			while (running && queued_send.empty()) send_cv.wait(lk);
+			milliseconds currentTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
 
-			if (!running || !DequeueForSending(&send_data_container)) continue;
-
-			_SendData(send_data_container->dataBuffer, send_data_container->data_end(), send_data_container->endpoint());
-
-			ReleaseForWriting(&send_data_container);
-		}
-	}
-
-	void UDPBase::DataListener() {
-		running = true;
-		DataContainer * work_container;
-		while (running) {
-			if (!GetFreeReceiveContainer(&work_container)) {
-				std::cerr << "\nERROR: no unused DataContainer to load data into." << std::endl;
-				this_thread::sleep_for(1s);
-				continue;
+			if (_connected && currentTime > lastReceivedHB + connectionTimeout) {
+				_connected = false;
 			}
 
-			asio::error_code ec;
-			try {
-				asio::socket_base::message_flags mf = 0;
+			if (!_connected && currentTime>lastRegister + registerInterval) {
+				Register();
+				lastRegister = currentTime;
+			}
 
-				size_t len = socket_.receive(asio::buffer(&work_container->dataBuffer[0], work_container->bufferSize), mf, ec);
-
-				if (len > 0) {
-					work_container->_header_start = 0;
-					work_container->_data_end = len;
-					if (work_container->packet_id() == 100) {
-						work_container->_data_start = 1;
-					} else if (work_container->packet_id() == 20) {
-						work_container->_data_start = 13; // 1+4*sizeof(uint32)
-					}
-					QueueForReading(&work_container);
-				} else {
+			if (_connected) {
+				if (currentTime > lastSentHB + HBInterval) {
+					lastSentHB = currentTime;
+					Punch();
 				}
-			} catch (exception& e) {
-				cerr << "Exception while receiving (Code " << ec << "): " << e.what() << endl;
-				this_thread::sleep_for(1s);
 			}
 
-			ReleaseForReceiving(&work_container);
+			this_thread::sleep_for(chrono::milliseconds(50));
 		}
 	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-	OldUDPConnector::OldUDPConnector(asio::io_service & io_service) : io_service_(io_service), socket_(io_service, udp::endpoint(udp::v4(), 0)) {
-		asio::socket_base::send_buffer_size option_set(65507);
-		socket_.set_option(option_set);
-
-		lastRegister = (milliseconds)0;
-		registerInterval = (milliseconds)2000;
-		lastSentHB = (milliseconds)0;
-		HBInterval = (milliseconds)2000;
-		lastReceivedHB = (milliseconds)0;
-		connectionTimeout = (milliseconds)5000;
+	void UDPConnector::Close() {
+		UDPBase::Close();
+		update_thread->join();
 	}
 
-	void OldUDPConnector::Init(string _socketID, string _UID, bool _isSender, const string& host, const string& port, bool _useMatchmaking) {
-		socketID = _socketID;
-		isSender = _isSender;
-		UID = _UID;
-		useMatchmaking = _useMatchmaking;
-
-		udp::resolver resolver(io_service_);
-		udp::resolver::query query(udp::v4(), host, port);
-		udp::resolver::iterator iter = resolver.resolve(query);
-		serverEndpoint_ = *iter;
-
-		_listenThread = std::thread(&OldUDPConnector::DataListener, this);
-
-		if (useMatchmaking) {
-			localIP = getLocalIP();
-			_updateThread = std::thread(&OldUDPConnector::Update, this);
-		} else {
-			connected = true;
-		}
+	void UDPConnector::Register() {
+		stringstream ss;
+		ss << "d{\"packageType\":\"register\",\"socketID\":\"" << socketID << "\",\"isSender\":" << (string)(is_sender ? "true" : "false") << ",\"localIP\":\"" << localIP << "\",\"UID\":\"" << guid << "\"}";
+		std::string json = ss.str();
+		SendData((unsigned char *) json.c_str(), json.length(), remote_endpoint_);
 	}
 
-	// TODO: Not threadsafe!
-	json OldUDPConnector::ReadData() {
-		if (msgQueue.size() < 1) {
-			return NULL;
-		} else {
-			json result = msgQueue.front();
-			msgQueue.pop();
-			return result;
-		}
+	void UDPConnector::Punch() {
+		std::string data = "d{\"type\":\"punch\"}";
+		SendData((unsigned char *) data.c_str(), data.length(), endpoint_);
 	}
 
-	void OldUDPConnector::SendData(unsigned char* data, size_t size) {
-		if (!useMatchmaking) {
-			socket_.send_to(asio::buffer(data, size), serverEndpoint_);
-		} else if (connected) {
-			socket_.send_to(asio::buffer(data, size), clientEndpoint_);
-		}
-	}
-
-	void OldUDPConnector::SendData(char* data, size_t size) {
-		if (!useMatchmaking) {
-			socket_.send_to(asio::buffer(data, size), serverEndpoint_);
-		} else if (connected) {
-			socket_.send_to(asio::buffer(data, size), clientEndpoint_);
-		}
-	}
-
-	void OldUDPConnector::Close() {
-		_listenRunning = false;
-		_updateRunning = false;
-
-		socket_.close(); // stop current transmissions (otherwise thread doesn't want to end).
-		if (useMatchmaking) _updateThread.join();
-		_listenThread.join();
-	}
-
-	bool OldUDPConnector::isConnected() {
-		return connected;
-	}
-
-
-	// PRIVATE
-
-	void OldUDPConnector::_SendData(const std::string& msg, udp::endpoint endpoint) {
-		try {
-			socket_.send_to(asio::buffer(msg, msg.size()), endpoint);
-		} catch (const exception& e) {
-			cout << "exception while sending: " << e.what() << endl;
-		}
-	}
-
-	void OldUDPConnector::DataListener() {
-		const size_t size = 65507;
-		char data[size];
-		_listenRunning = true;
-		while (_listenRunning) {
-			asio::error_code ec;
-			try {
-				asio::socket_base::message_flags mf = 0;
-				size_t len = socket_.receive(asio::buffer(data, size), mf, ec);
-				if (len > 0) {
-					cout << len << endl;
-					HandleReceivedData(data, len);
-				}
-			} catch (exception& e) {
-				cerr << "Exception while receiving (Code " << ec << "): " << e.what() << endl;
-			}
-		}
-	}
-
-	void OldUDPConnector::HandleReceivedData(char* data, int len) {
-		char magicByte = data[0];
-
-		if (magicByte == 100) {
-			json j = json::parse(&data[1], &data[len]);
-			cout << j << endl;
-			if (j["type"] == "answer") {
-				string host = j.at("address").get<string>();
-				string port = to_string(j.at("port").get<int>());
-
-				udp::resolver resolver(io_service_);
-				udp::resolver::query query(udp::v4(), host, port);
-				udp::resolver::iterator iter = resolver.resolve(query);
-				clientEndpoint_ = *iter;
-
-				Punch();
-				Punch();
-			} else if (j["type"] == "punch") {
-				lastReceivedHB = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-				connected = true;
-			}
-		} else if (magicByte == 20) {
-			uint32_t packageSequenceID = 0;
-			uint32_t partsAm = 0;
-			uint32_t currentPart = 0;
-			unsigned int bytePos = 1;
-			memcpy(&packageSequenceID, &data[bytePos], sizeof(packageSequenceID));
-			bytePos += sizeof(packageSequenceID);
-			memcpy(&partsAm, &data[bytePos], sizeof(partsAm));
-			bytePos += sizeof(partsAm);
-			memcpy(&currentPart, &data[bytePos], sizeof(currentPart));
-			bytePos += sizeof(currentPart);
-			cout << packageSequenceID << " " << partsAm << " " << currentPart << endl;
-			json j = json::parse(&data[bytePos], &data[len]);
-			cout << j << endl;
-			msgQueue.push(j);
-			while (msgQueue.size() > 10) {
-				msgQueue.pop();
-			}
-		} else {
-			cout << "Unknown msg type: " << magicByte << endl;
-		}
-	}
-
-	string OldUDPConnector::getLocalIP() {
-		string _localIP = "noLocalIP";
+	std::string UDPConnector::get_local_ip() {
+		std::string _localIP = "noLocalIP";
 		try {
 			asio::io_service netService;
 			tcp::resolver resolver(netService);
@@ -447,43 +103,53 @@ namespace oi { namespace core { namespace network {
 		return _localIP;
 	}
 
-	// Interact with MM server, perform UDP Hole Punches
-	void OldUDPConnector::Update() {
-		_updateRunning = true;
-		while (_updateRunning) {
-			milliseconds currentTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+	void UDPConnector::HandleReceivedData(DataContainer * container) {
+		unsigned char * data = &(container->dataBuffer[0]);
+		size_t len = container->data_end();
 
-			if (connected && currentTime > lastReceivedHB + connectionTimeout) {
-				connected = false;
+		char magicByte = data[0];
+
+		if (magicByte == 100) {
+			json j = json::parse(&data[1], &data[len]);
+			cout << endl << j << endl;
+			if (j["type"] == "answer") {
+				string host = j.at("address").get<string>();
+				string port = to_string(j.at("port").get<int>());
+
+				udp::resolver resolver(io_service_);
+				udp::resolver::query query(udp::v4(), host, port);
+				udp::resolver::iterator iter = resolver.resolve(query);
+				endpoint_ = *iter;
+
+				Punch();
+				Punch();
+			} else if (j["type"] == "punch") {
+				lastReceivedHB = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+				_connected = true;
 			}
 
-			if (!connected && currentTime>lastRegister + registerInterval) {
-				Register();
-				lastRegister = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-			}
+			return ReleaseForReceiving(&container);
+		} else if (magicByte == 20) {
+			uint32_t packageSequenceID = 0;
+			uint32_t partsAm = 0;
+			uint32_t currentPart = 0;
+			unsigned int bytePos = 1;
+			memcpy(&packageSequenceID, &data[bytePos], sizeof(packageSequenceID));
+			bytePos += sizeof(packageSequenceID);
+			memcpy(&partsAm, &data[bytePos], sizeof(partsAm));
+			bytePos += sizeof(partsAm);
+			memcpy(&currentPart, &data[bytePos], sizeof(currentPart));
+			bytePos += sizeof(currentPart);
+			cout << packageSequenceID << " " << partsAm << " " << currentPart << endl;
 
-			if (connected) {
-				if (currentTime > lastSentHB + HBInterval) {
-					lastSentHB = currentTime;
-					Punch();
-				}
-			}
-			this_thread::sleep_for(chrono::milliseconds(50));
+			QueueForReading(&container);
+		} else {
+			std::cerr << "\nERROR: Unknown msg type: " << magicByte << endl;
 		}
+
+		ReleaseForReceiving(&container);
 	}
 
-	void OldUDPConnector::Register() {
-		stringstream ss;
-		ss << "d{\"packageType\":\"register\",\"socketID\":\"" << socketID << "\",\"isSender\":" << (string)(isSender ? "true" : "false") << ",\"localIP\":\"" << localIP << "\",\"UID\":\"" << UID << "\"}";
-		string json = ss.str();
-		cout << "REGISTER" << endl;
-		_SendData(json, serverEndpoint_);
-	}
-
-	void OldUDPConnector::Punch() {
-		string data = "d{\"type\":\"punch\"}";
-		_SendData(data, clientEndpoint_);
-	}
 
 
 
