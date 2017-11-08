@@ -61,7 +61,7 @@ namespace oi { namespace core { namespace rgbd {
 	class RGBDStreamer {
 	public:
 		RGBDStreamer(StreamerConfig cfg, oi::core::network::UDPBase * c);
-		void PopulateDeviceConfigMessage();
+		void ConfigStream();
 		std::chrono::milliseconds NOW();
 		void HandleData();
 		void Run();
@@ -72,7 +72,6 @@ namespace oi { namespace core { namespace rgbd {
 		virtual int SendFrame() = 0;
 		int SendConfig();
 	protected:
-		void _AllocateBuffers();
 		int _SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata);
 
 		virtual int frame_width() = 0;
@@ -100,12 +99,7 @@ namespace oi { namespace core { namespace rgbd {
 		const int JPEG_QUALITY = 40;
 		const int MAX_UDP_PACKET_SIZE = 65506;
 
-		// Set in Init()
 		unsigned int linesPerMessage;
-		unsigned long frameStreamBufferDepthSize;
-		unsigned long frameStreamBufferColorSize;
-		unsigned char * frameStreamBufferDepth;
-		unsigned char * frameStreamBufferColor;
 
 		// Recording specific
 		std::map<std::string, record_state> recordings;
@@ -117,7 +111,7 @@ namespace oi { namespace core { namespace rgbd {
 		std::chrono::milliseconds lastFpsAverage;
 		const std::chrono::milliseconds interval{ 2000 };
 
-
+	private:
 		// Networking
 		oi::core::network::UDPBase * client;
 	};

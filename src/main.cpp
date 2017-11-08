@@ -15,26 +15,18 @@ int main(int argc, char *argv[]) {
 	cfg.Parse(argc, argv);
 	std::cout << "CFG: " << cfg.listenPort << " " << cfg.remotePort << " " << cfg.remoteHost << std::endl;
 	oi::core::network::UDPBase client(cfg.listenPort, cfg.remotePort, cfg.remoteHost, io_service_);
-	client.Init(1024, 10, 65506, 5);
+	client.Init(1024, 32, 65506, 32);
 
 	oi::core::rgbd::LibFreenect2Streamer lf2stream(cfg, &client);
 	lf2stream.Run();
 	lf2stream.Exit();
 
-	std::cout << "exited gracefully..." << std::endl;
-
-	while (true) {}
-	/*
-	while (true) {
-		oi::core::network::DataContainer * dc;
-		if (!client.GetNewData(&dc)) continue;
-
-		std::string raw((char *) &(dc->dataBuffer[dc->data_start()]), dc->data_end() - dc->data_start());
-		std::cout << "|" << raw << "|" << std::endl;
-
-		client.ReleaseContainer(&dc);
-	}*/
+	system("pause");
 }
+
+
+
+
 
 //UDPConnector * client;
 

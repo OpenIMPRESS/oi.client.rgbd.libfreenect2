@@ -12,27 +12,9 @@ namespace oi { namespace core { namespace rgbd {
 		client = c;
 	}
 
-	void RGBDStreamer::_AllocateBuffers() {
-		float maximumLinesPerDepthPacket = (MAX_UDP_PACKET_SIZE - headerSize) / (2 * frame_width());
-		linesPerMessage = (unsigned int) maximumLinesPerDepthPacket;
-		// Round to multiple of 4 for DTX compression
-		//int remainderM4 = linesPerMessage % 4;
-		//linesPerMessage = linesPerMessage - remainderM4;
-
-		// ALLOCATE BUFFERS
-		frameStreamBufferDepthSize = 2 * frame_width() * linesPerMessage + headerSize;
-		frameStreamBufferDepth = new unsigned char[frameStreamBufferDepthSize];
-		// TODO: for some reason tjBufSize now returns ulong.maxValue...
-		// tjBufSize(frame_width(), frame_height(), JPEG_QUALITY) + headerSize
-		frameStreamBufferColorSize = std::min((int)(frame_width() * frame_height() * 3 + headerSize), (int)MAX_UDP_PACKET_SIZE);
-		std::cout << frameStreamBufferColorSize << std::endl;
-		frameStreamBufferColor = new unsigned char[frameStreamBufferColorSize];
-		// TODO: what is a good estimate maximum?
-	}
-
 	void RGBDStreamer::Run() {
 		OpenDevice();
-		PopulateDeviceConfigMessage();
+		ConfigStream();
 
 		stream_shutdown = false;
 		while (!stream_shutdown) {
@@ -50,8 +32,10 @@ namespace oi { namespace core { namespace rgbd {
 			if (lastFpsAverage + interval <= NOW()) {
 				lastFpsAverage = NOW();
 				double timeDelta = (interval.count() / 1000.0);
-				std::cout << fpsCounter / timeDelta << " f/s, "
-						  << ((bytesCounter/1024.0)/1024) / timeDelta << " MB/s\n";
+
+				printf("\r >> Streaming at %5.2f Fps - Data: %5.2f Mbps", fpsCounter / timeDelta, ((bytesCounter / 1024.0) / 1024) / timeDelta);
+				std::cout << std::flush;
+
 				fpsCounter = 0;
 				bytesCounter = 0;
 				if (SendConfig() <= 0) stream_shutdown = true;
@@ -67,8 +51,19 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	int RGBDStreamer::SendConfig() {
-		memcpy(config_msg_buf, &stream_config, sizeof(stream_config));
-		return client->SendData((unsigned char*)config_msg_buf, sizeof(stream_config));
+		oi::core::network::DataContainer * dc;
+		if (!client->GetFreeWriteContainer(&dc)) {
+			std::cout << "\nERROR: No free buffers available" << std::endl;
+			return -1;
+		}
+
+		int data_len = sizeof(stream_config);
+		memcpy(dc->dataBuffer, &stream_config, data_len);
+		dc->_data_end = data_len;
+		client->QueueForSending(&dc);
+		return data_len;
+
+		//return client->SendData((unsigned char*)config_msg_buf, sizeof(stream_config));
 	}
 
 	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata) {
@@ -83,13 +78,19 @@ namespace oi { namespace core { namespace rgbd {
 		rgbd_header.msgType = 0x04;
 		rgbd_header.startRow = (unsigned short) 0;             // ... we can fit the whole...
 		rgbd_header.endRow = (unsigned short) frame_height(); //...RGB data in one packet
-		memcpy(&frameStreamBufferColor[0], &rgbd_header, headerSize);
+
+		oi::core::network::DataContainer * dc_rgb;
+		if (!client->GetFreeWriteContainer(&dc_rgb)) {
+			std::cout << "\nERROR: No free buffers available" << std::endl;
+			return -1;
+		}
+
+		memcpy(dc_rgb->dataBuffer, &rgbd_header, headerSize);
 
 		// COMPRESS COLOR
-		long unsigned int _jpegSize = frameStreamBufferColorSize - headerSize;
-		unsigned char* _compressedImage = &frameStreamBufferColor[headerSize];
+		long unsigned int _jpegSize = dc_rgb->bufferSize - headerSize;
+		unsigned char* _compressedImage = &(dc_rgb->dataBuffer[headerSize]);
 
-		// replace  _complressedImage with &frameStreamBufferColor[headerSize]
 		tjhandle _jpegCompressor = tjInitCompress();
 		tjCompress2(_jpegCompressor, rgbdata, (int)frame_width(), 0, (int)frame_height(), color_pixel_format(),
 			&_compressedImage, &_jpegSize, TJSAMP_444, JPEG_QUALITY,
@@ -101,10 +102,10 @@ namespace oi { namespace core { namespace rgbd {
 		fclose(file);
 		*/
 
-		long unsigned int colorDataSize = headerSize + _jpegSize;
-		int cres = client->SendData(frameStreamBufferColor, colorDataSize);
-		if (cres <= 0) return -1;
-		res += cres;
+		int c_data_len = headerSize + _jpegSize;
+		dc_rgb->_data_end = c_data_len;
+		client->QueueForSending(&dc_rgb);
+		res += c_data_len;
 
 		/*
 		if (fileDumpValue.length() > 0 && !replay) {
@@ -118,10 +119,10 @@ namespace oi { namespace core { namespace rgbd {
 		}*/
 
 		tjDestroy(_jpegCompressor);
-		//tjFree(_compressedImage);
 
 		// Send Depth
 		rgbd_header.msgType = 0x03;
+
 
 		/*
 		unsigned long int npackets = (unsigned long int) (frame_height() + linesPerMessage - 1) / linesPerMessage; // round up division
@@ -138,7 +139,13 @@ namespace oi { namespace core { namespace rgbd {
 			rgbd_header.startRow = (unsigned short)startRow;
 			rgbd_header.endRow = (unsigned short)endRow;
 
-			memcpy(&frameStreamBufferDepth[0], &rgbd_header, headerSize);
+			oi::core::network::DataContainer * dc_depth;
+			if (!client->GetFreeWriteContainer(&dc_depth)) {
+				std::cout << "\nERROR: No free buffers available" << std::endl;
+				return -1;
+			}
+
+			memcpy(dc_depth->dataBuffer, &rgbd_header, headerSize);
 			size_t writeOffset = headerSize;
 
 			size_t depthLineSizeR = frame_width() * raw_depth_stride();
@@ -149,7 +156,7 @@ namespace oi { namespace core { namespace rgbd {
 					float depthValue = 0;
 					memcpy(&depthValue, &depthdata[readOffset + i * 4], sizeof(depthValue));
 					unsigned short depthValueShort = (unsigned short)(depthValue);
-					memcpy(&frameStreamBufferDepth[writeOffset + i * 2], &depthValueShort, sizeof(depthValueShort));
+					memcpy(&(dc_depth->dataBuffer[writeOffset + i * 2]), &depthValueShort, sizeof(depthValueShort));
 				}
 				writeOffset += depthLineSizeW;
 				readOffset += depthLineSizeR;
@@ -159,9 +166,11 @@ namespace oi { namespace core { namespace rgbd {
 			//readOffset = startRow*colorLineSizeR;
 			//stb_compress_dxt(&frameStreamBuffer[writeOffset], &regrgb->data[readOffset], 512, (int)totalLines, 0);
 			
-			int dres = client->SendData(frameStreamBufferDepth, writeOffset);
-			if (dres <= 0) return -1;
-			res += dres;
+
+			int d_data_len = writeOffset;
+			dc_depth->_data_end = d_data_len;
+			client->QueueForSending(&dc_depth);
+			res += d_data_len;
 
 			/*
 			long unsigned int depthDataSize = (unsigned long int) writeOffset;
@@ -179,7 +188,7 @@ namespace oi { namespace core { namespace rgbd {
 		if (!client->DequeueForReading(&dc)) return;
 
 		std::string raw((char *) &(dc->dataBuffer[dc->data_start()]), dc->data_end() - dc->data_start());
-		std::cout << "|" << raw << "|" << std::endl;
+		std::cout << "\n|" << raw << "|" << std::endl;
 
 		if (!HandleData(dc)) {
 			nlohmann::json msg = nlohmann::json::parse(
@@ -211,7 +220,9 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 
-	void RGBDStreamer::PopulateDeviceConfigMessage() {
+	void RGBDStreamer::ConfigStream() {
+		linesPerMessage = (unsigned int)(MAX_UDP_PACKET_SIZE - headerSize) / (2 * frame_width());
+
 		stream_config.frameWidth = (unsigned short) frame_width();
 		stream_config.frameHeight = (unsigned short) frame_height();
 		stream_config.maxLines = (unsigned short) linesPerMessage;
@@ -222,7 +233,6 @@ namespace oi { namespace core { namespace rgbd {
 		stream_config.DepthScale = device_depth_scale();
 		std::string guid = device_guid();
 		strcpy_s(stream_config.guid, 33, guid.c_str());
-		// TODO: check if this works if guid is smaller;
 
 		config_msg_buf = new unsigned char[sizeof(stream_config)];
 	}

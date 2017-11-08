@@ -30,10 +30,9 @@ namespace oi { namespace core { namespace network {
 		}
 
 		listen_thread = new std::thread(&UDPBase::DataListener, this);
+		send_thread = new std::thread(&UDPBase::DataSender, this);
 		return true;
 	}
-
-
 
 
 	int UDPBase::SendData(unsigned char* data, size_t size) {
@@ -41,20 +40,29 @@ namespace oi { namespace core { namespace network {
 	}
 
 	int UDPBase::SendData(unsigned char* data, size_t size, udp::endpoint ep) {
+		std::unique_lock<std::mutex> lk(send_mutex);
+		return _SendData(data, size, ep);
+	}
+
+	int UDPBase::_SendData(unsigned char* data, size_t size, udp::endpoint ep) {
 		try {
 			return socket_.send_to(asio::buffer(data, size), ep);
 		} catch (std::exception& e) {
-			std::cerr << "Send Exception: " << e.what() << "\n";
+			std::cerr << "\nERROR: Send Exception: " << e.what() << "\n";
 			return -1;
 		}
 	}
-
 
 
 	void UDPBase::Close() {
 		running = false;
 		socket_.close();
 		listen_thread->join();
+		std::unique_lock<std::mutex> lk(send_mutex);
+		send_cv.notify_all();
+		send_cv.notify_one();
+		lk.unlock();
+		send_thread->join();
 
 		while (!queued_receive.empty()) {
 			DataContainer * dc = queued_receive.front();
@@ -135,7 +143,7 @@ namespace oi { namespace core { namespace network {
 	}
 
 	bool UDPBase::DequeueForSending(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(send_mutex);
+		//std::unique_lock<std::mutex> lk(send_mutex);
 		if (queued_send.empty()) return false;
 		*container = queued_send.front();
 		queued_send.pop();
@@ -144,11 +152,10 @@ namespace oi { namespace core { namespace network {
 
 	void UDPBase::ReleaseForWriting(DataContainer ** container) {
 		if (*container == NULL) return;
-		std::unique_lock<std::mutex> lk(send_mutex);
+		//std::unique_lock<std::mutex> lk(send_mutex);
 		unused_send.push(*container);
 		*container = NULL;
 	}
-
 
 	unsigned int DataContainer::header_start() {
 		return _header_start;
@@ -175,24 +182,14 @@ namespace oi { namespace core { namespace network {
 		DataContainer * send_data_container;
 		while (running) {
 			std::unique_lock<std::mutex> lk(send_mutex);
-			//while (queued_send.empty())
-			std::cout << "sender waiting" << std::endl;
-			send_cv.wait(lk);
+			while (running && queued_send.empty()) send_cv.wait(lk);
 
-			if (!GetSendData(&send_data_container)) continue;
+			if (!running || !DequeueForSending(&send_data_container)) continue;
 
-			SendData(send_data_container->dataBuffer, send_data_container->data_end(), send_data_container->endpoint());
+			_SendData(send_data_container->dataBuffer, send_data_container->data_end(), send_data_container->endpoint());
 
 			ReleaseForWriting(&send_data_container);
 		}
-	}
-
-	bool UDPBase::GetSendData(DataContainer ** container) {
-		std::unique_lock<std::mutex> lk(send_mutex);
-		if (queued_send.empty()) return false;
-		*container = queued_send.front();
-		queued_send.pop();
-		return true;
 	}
 
 	void UDPBase::DataListener() {
@@ -200,7 +197,7 @@ namespace oi { namespace core { namespace network {
 		DataContainer * work_container;
 		while (running) {
 			if (!GetFreeReceiveContainer(&work_container)) {
-				cout << "ERROR: no unused DataContainer to load data into." << endl;
+				std::cerr << "\nERROR: no unused DataContainer to load data into." << std::endl;
 				this_thread::sleep_for(1s);
 				continue;
 			}

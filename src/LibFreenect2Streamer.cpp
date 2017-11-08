@@ -20,17 +20,14 @@ void sigusr1_handler(int s) {
 namespace oi { namespace core { namespace rgbd {
 
 	LibFreenect2Streamer::LibFreenect2Streamer(StreamerConfig cfg, oi::core::network::UDPBase * c) : RGBDStreamer(cfg, c) {
-		_AllocateBuffers();
 	}
-
-
 
 	bool LibFreenect2Streamer::OpenDevice() {
 
 		freenect2 = new libfreenect2::Freenect2();
 		libfreenect2::PacketPipeline *pipeline = 0;
 		if (freenect2->enumerateDevices() == 0) {
-			std::cout << "E: No device connected." << std::endl;
+			std::cerr << "ERROR: No device connected." << std::endl;
 			return false;
 		}
 
@@ -42,25 +39,25 @@ namespace oi { namespace core { namespace rgbd {
 #ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
 			pipeline = new libfreenect2::OpenGLPacketPipeline();
 #else
-			std::cout << "OpenGL pipeline is not supported!" << std::endl;
+			std::cerr << "OpenGL pipeline is not supported!" << std::endl;
 			return false;
 #endif
 		} else if (this->config.pipeline.compare("cuda") == 0) {
 #ifdef LIBFREENECT2_WITH_CUDA_SUPPORT
 			pipeline = new libfreenect2::CudaPacketPipeline(-1);
 #else
-			std::cout << "CUDA pipeline is not supported!" << std::endl;
+			std::cerr << "CUDA pipeline is not supported!" << std::endl;
 			return false;
 #endif
 		} else if (this->config.pipeline.compare("opencl") == 0) {
 #ifdef LIBFREENECT2_WITH_OPENCL_SUPPORT
 			pipeline = new libfreenect2::OpenCLPacketPipeline(-1);
 #else
-			std::cout << "OpenCL pipeline is not supported!" << std::endl;
+			std::cerr << "OpenCL pipeline is not supported!" << std::endl;
 			return false;
 #endif
 		} else {
-			std::cout << "Unknown pipeline: " << this->config.pipeline << std::endl;
+			std::cerr << "Unknown pipeline: " << this->config.pipeline << std::endl;
 			return false;
 		}
 
@@ -74,7 +71,7 @@ namespace oi { namespace core { namespace rgbd {
 		// Open Device & Register listenres
 		dev = freenect2->openDevice(serial, pipeline);
 		if (!dev->start()) {
-			std::cout << "E: Failed to start device." << std::endl;
+			std::cerr << "ERROR: Failed to start device." << std::endl;
 			return false;
 		}
 
@@ -110,7 +107,10 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	int LibFreenect2Streamer::SendFrame() {
-		if (!listener->waitForNewFrame(*frames, 5 * 1000)) return -1;
+		if (!listener->waitForNewFrame(*frames, 5 * 1000)) {
+			std::cerr << "\nERROR: Libfreenect2 did not provide a new frame." << std::endl;
+			return -1;
+		}
 		libfreenect2::Frame *rgb = (*frames)[libfreenect2::Frame::Color];
 		libfreenect2::Frame *depth = (*frames)[libfreenect2::Frame::Depth];
 		registration->apply(rgb, depth, undistorted, registered);
