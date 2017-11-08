@@ -49,13 +49,6 @@ FIND_FILE(freenect2_DLL_D freenect2d.dll
     "bin/Debug" "bin"
 )
 
-FILE(COPY ${freenect2_DLL} DESTINATION ${CMAKE_BINARY_DIR}/Release)
-SET(freenect2_DLL ${CMAKE_BINARY_DIR}/Release/freenect2.dll)
-FILE(COPY ${freenect2_DLL_D} DESTINATION ${CMAKE_BINARY_DIR}/Debug)
-SET(freenect2_DLL ${CMAKE_BINARY_DIR}/Debug/freenect2d.dll)
-
-SET(freenect2_DLLS ${freenect2_DLL} )
-SET(freenect2_DLLS_D ${freenect2_DLL_D} )
 ENDIF()
 
 FIND_PATH(freenect2_INCLUDE_DIR libfreenect2/libfreenect2.hpp
