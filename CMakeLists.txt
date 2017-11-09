@@ -67,12 +67,14 @@ LIST(APPEND application_HEADERS
   ${PROJECT_SOURCE_DIR}/headers/config.h
   ${PROJECT_SOURCE_DIR}/headers/json.hpp
   ${PROJECT_SOURCE_DIR}/headers/stb_dxt.h
+  ${PROJECT_SOURCE_DIR}/headers/UDPBase.hpp
   ${PROJECT_SOURCE_DIR}/headers/UDPConnector.hpp
   ${PROJECT_SOURCE_DIR}/headers/RGBDStreamer.hpp
   ${PROJECT_SOURCE_DIR}/headers/LibFreenect2Streamer.hpp
 )
 
 LIST(APPEND application_SRC
+  ${PROJECT_SOURCE_DIR}/src/UDPBase.cpp
   ${PROJECT_SOURCE_DIR}/src/UDPConnector.cpp
   ${PROJECT_SOURCE_DIR}/src/RGBDStreamer.cpp
   ${PROJECT_SOURCE_DIR}/src/LibFreenect2Streamer.cpp

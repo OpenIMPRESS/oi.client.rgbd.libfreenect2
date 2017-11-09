@@ -155,8 +155,7 @@ namespace oi { namespace core { namespace network {
 		QueueForSending(container, endpoint_);
 	}
 
-	bool UDPBase::DequeueForSending(DataContainer ** container) {
-		//std::unique_lock<std::mutex> lk(send_mutex);
+	bool UDPBase::_DequeueForSending(DataContainer ** container) {
 		if (queued_send.empty()) return false;
 		*container = queued_send.front();
 		queued_send.pop();
@@ -165,7 +164,13 @@ namespace oi { namespace core { namespace network {
 
 	void UDPBase::ReleaseForWriting(DataContainer ** container) {
 		if (*container == NULL) return;
-		//std::unique_lock<std::mutex> lk(send_mutex);
+		std::unique_lock<std::mutex> lk(send_mutex);
+		unused_send.push(*container);
+		*container = NULL;
+	}
+
+	void UDPBase::_ReleaseForWriting(DataContainer ** container) {
+		if (*container == NULL) return;
 		unused_send.push(*container);
 		*container = NULL;
 	}
@@ -181,11 +186,9 @@ namespace oi { namespace core { namespace network {
 			std::unique_lock<std::mutex> lk(send_mutex);
 			while (running && queued_send.empty()) send_cv.wait(lk);
 
-			if (!running || !DequeueForSending(&send_data_container)) continue;
-
+			if (!running || !_DequeueForSending(&send_data_container)) continue;
 			_SendDataBlocking(send_data_container->dataBuffer, send_data_container->data_end(), send_data_container->endpoint());
-
-			ReleaseForWriting(&send_data_container);
+			_ReleaseForWriting(&send_data_container);
 		}
 	}
 

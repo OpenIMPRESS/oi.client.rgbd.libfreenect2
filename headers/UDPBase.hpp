@@ -66,6 +66,9 @@ namespace oi { namespace core { namespace network {
 		void QueueForSending(DataContainer ** container);
 		void QueueForSending(DataContainer ** container, asio::ip::udp::endpoint ep);
 
+		// Release container for send data without sending
+		void ReleaseForWriting(DataContainer ** container);
+
 		/// Queues data for sending.
 		/// This copyies data to a container internally...
 		/// So the queue pattern is better suited for bigger chunks of data!
@@ -85,11 +88,11 @@ namespace oi { namespace core { namespace network {
 
 		/// Dequeue container with received data for sending
 		/// NEED TO HAVE LOCK
-		bool DequeueForSending(DataContainer ** container);
+		bool _DequeueForSending(DataContainer ** container);
 
 		/// Release container to unused send queue
 		/// NEED TO HAVE LOCK
-		void ReleaseForWriting(DataContainer ** container);
+		void _ReleaseForWriting(DataContainer ** container);
 
 		virtual int _SendDataBlocking(unsigned char* data, size_t size, asio::ip::udp::endpoint endpoint);
 
