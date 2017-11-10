@@ -56,7 +56,7 @@ namespace oi { namespace core { namespace rgbd {
 		int remotePort = 10101; // 10101 6312
 		int listenPort = 10102; // 10102 0
 		std::string deviceSerial = "038994245147";
-		std::string pipeline = "cuda";
+		std::string pipeline = "opencl";
 		std::string fileDump = "";
 		float maxDepth = 8.0f;
 		std::string recordPath = "";// "D:/RGBD/"; //

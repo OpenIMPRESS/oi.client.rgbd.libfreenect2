@@ -361,7 +361,7 @@ namespace oi { namespace core { namespace rgbd {
 		stream_config.Fy = device_fy();
 		stream_config.DepthScale = device_depth_scale();
 		std::string guid = device_guid();
-		strcpy_s(stream_config.guid, 33, guid.c_str());
+        memcpy(&(stream_config.guid[0]), guid.c_str(), guid.length());
 
 		config_msg_buf = new unsigned char[sizeof(stream_config)];
 	}

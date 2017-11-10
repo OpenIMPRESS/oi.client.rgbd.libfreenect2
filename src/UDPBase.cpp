@@ -14,7 +14,9 @@ namespace oi { namespace core { namespace network {
 		this->sendHost = sendHost;
 		asio::socket_base::send_buffer_size option_set(65507);
 		this->socket_.set_option(option_set);
-		this->endpoint_ = * resolver_.resolve(udp::v4(), this->sendHost, to_string(this->sendPort));
+            
+        udp::resolver::query query(udp::v4(), this->sendHost, to_string(this->sendPort));
+        this->endpoint_ = *resolver_.resolve(query);
 		this->_connected = true;
 	}
 
@@ -204,7 +206,7 @@ namespace oi { namespace core { namespace network {
 		while (running) {
 			if (!GetFreeReceiveContainer(&work_container)) {
 				std::cerr << "\nERROR: no unused DataContainer to load data into." << std::endl;
-				this_thread::sleep_for(1s);
+                this_thread::sleep_for(std::chrono::milliseconds(1000));
 				continue;
 			}
 
@@ -227,7 +229,7 @@ namespace oi { namespace core { namespace network {
 				}
 			} catch (exception& e) {
 				cerr << "Exception while receiving (Code " << ec << "): " << e.what() << endl;
-				this_thread::sleep_for(1s);
+                this_thread::sleep_for(std::chrono::milliseconds(1000));
 			}
 
 			ReleaseForReceiving(&work_container);
