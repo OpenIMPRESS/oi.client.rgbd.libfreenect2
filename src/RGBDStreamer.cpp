@@ -14,6 +14,7 @@ namespace oi { namespace core { namespace rgbd {
 		bytesCounter = 0;
 		lastFpsAverage = NOW();
 		this->config = cfg;
+		record_state.PATH = cfg.recordPath;
 		client = c;
 	}
 
@@ -377,6 +378,7 @@ namespace oi { namespace core { namespace rgbd {
 		std::string maxDepthParam("-d");
 		std::string pipelineParam("-p");
 		std::string fileDumpParam("-o");
+		std::string recordPathParam("-rp");
 
 		for (int count = 1; count < argc; count += 2) {
 			if (socketIDParam.compare(argv[count]) == 0) {
@@ -391,6 +393,8 @@ namespace oi { namespace core { namespace rgbd {
 				this->deviceSerial = argv[count + 1];
 			} else if (pipelineParam.compare(argv[count]) == 0) {
 				this->pipeline = argv[count + 1];
+			} else if (recordPathParam.compare(argv[count]) == 0) {
+				this->recordPath = argv[count + 1];
 			} else if (maxDepthParam.compare(argv[count]) == 0) {
 				this->maxDepth = std::stof(argv[count + 1]);
 			} else if (fileDumpParam.compare(argv[count]) == 0) {
@@ -443,7 +447,7 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	bool RecordState::LoadMeta(std::string name) {
-		std::string filename_meta = name + META_SUFFIX;
+		std::string filename_meta = PATH + name + META_SUFFIX;
 		std::ifstream in_meta;
 		in_meta.open(filename_meta, std::ios::binary | std::ios::in);
 		if (in_meta.fail()) return false;
@@ -465,8 +469,8 @@ namespace oi { namespace core { namespace rgbd {
 			return false;
 		}
 
-		std::string filename_data = name + DATA_SUFFIX;
-		std::string filename_meta = name + META_SUFFIX;
+		std::string filename_data = PATH + name + DATA_SUFFIX;
+		std::string filename_meta = PATH + name + META_SUFFIX;
 		_next_frame = name;
 		_current_frame = 0;
 		_out_data.open(filename_data, std::ios::binary | std::ios::out | std::ios::trunc);
@@ -508,8 +512,8 @@ namespace oi { namespace core { namespace rgbd {
 			StopReplaying();
 		}
 
-		std::string filename_data = name + DATA_SUFFIX;
-		std::string filename_meta = name + META_SUFFIX;
+		std::string filename_data = PATH + name + DATA_SUFFIX;
+		std::string filename_meta = PATH + name + META_SUFFIX;
 		_in_data.open(filename_data, std::ios::binary | std::ios::in);
 		if (files_meta.find(name) == files_meta.end() && (!LoadMeta(name) || _in_data.fail())) {
 			std::cout << "\nERROR: Failed to open \"" << name << "\" for replaying" << std::endl;

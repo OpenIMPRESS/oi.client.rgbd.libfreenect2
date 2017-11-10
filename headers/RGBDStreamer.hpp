@@ -59,6 +59,7 @@ namespace oi { namespace core { namespace rgbd {
 		std::string pipeline = "cuda";
 		std::string fileDump = "";
 		float maxDepth = 8.0f;
+		std::string recordPath = "";// "D:/RGBD/"; //
 	};
 
 	class FileMeta {
@@ -99,7 +100,7 @@ namespace oi { namespace core { namespace rgbd {
 		std::ostream * meta_writer();
 		std::ifstream * data_reader();
 		CONFIG_STRUCT * replay_config();
-
+		std::string PATH;
 		const std::string DATA_SUFFIX =  ".rgbd.data";
 		const std::string META_SUFFIX = ".rgbd.meta";
 		RGBD_HEADER_STRUCT replay_header;
