@@ -13,7 +13,7 @@ asio::io_service io_service_;
 int main(int argc, char *argv[]) {
 	oi::core::rgbd::StreamerConfig cfg;
 	cfg.Parse(argc, argv);
-	std::cout << "CFG: " << cfg.listenPort << " " << cfg.remotePort << " " << cfg.remoteHost << std::endl;
+	std::cout << "CFG: " << cfg.listenPort << " <=> " << cfg.remoteHost << ":" << cfg.remotePort << std::endl;
 
 	if (cfg.useMatchMaking) {
 		oi::core::network::UDPConnector client(cfg.listenPort, cfg.remotePort, cfg.remoteHost, io_service_);

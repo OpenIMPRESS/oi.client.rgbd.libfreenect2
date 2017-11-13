@@ -1,4 +1,5 @@
 #include "RGBDStreamer.hpp"
+#include <string>
 #include <algorithm> 
 
 namespace oi { namespace core { namespace rgbd {
@@ -12,9 +13,10 @@ namespace oi { namespace core { namespace rgbd {
 	RGBDStreamer::RGBDStreamer(StreamerConfig cfg, oi::core::network::UDPBase * c) {
 		fpsCounter = 0;
 		bytesCounter = 0;
+		audioSamplesCounter = 0;
 		lastFpsAverage = NOW();
 		this->config = cfg;
-		record_state.PATH = cfg.recordPath;
+		record_state.PATH = cfg.filePath;
 		client = c;
 	}
 
@@ -25,7 +27,6 @@ namespace oi { namespace core { namespace rgbd {
 		stream_shutdown = false;
 		while (!stream_shutdown) {
 			int sentBytes = 0;
-
 
 			// TODO:
 			//		if we both record and REPLAY, can't we replay in a thread while waiting for frames?
@@ -40,30 +41,69 @@ namespace oi { namespace core { namespace rgbd {
 				sentBytes = ReplayNextFrame();
 			}
 
-			if (sentBytes >= 0) {
+			if (sentBytes > 0) {
 				bytesCounter += sentBytes;
 				fpsCounter++;
-			} else {
+			} else if (sentBytes == -1) {
 				stream_shutdown = true;
 				continue;
 			}
 
-			HandleData();
+			HandleData(); // Parse & schedule commands
+
+			HandleCommands();
 
 			if (lastFpsAverage + interval <= NOW()) {
 				lastFpsAverage = NOW();
 				double timeDelta = (interval.count() / 1000.0);
 
-				printf("\r >> Streaming at %5.2f Fps - Data: %5.2f Mbps", fpsCounter / timeDelta, ((bytesCounter / 1024.0) / 1024) / timeDelta);
+				printf("\r >> Streaming at %5.2f Fps - Data: %5.2f Mbps - Audio: %5.2f Samples/s", fpsCounter / timeDelta, ((bytesCounter / 1024.0) / 1024) / timeDelta, audioSamplesCounter / timeDelta);
 				std::cout << std::flush;
 
 				fpsCounter = 0;
 				bytesCounter = 0;
+				audioSamplesCounter = 0;
 				if (SendConfig() <= 0) stream_shutdown = true;
 			}
 
 		}
 	}
+
+	void RGBDStreamer::HandleCommands() {
+		if (scheduled_commands.size() < 1) return;
+		std::chrono::milliseconds t = NOW();
+		if (scheduled_commands.top().time <= t) {
+			nlohmann::json msg = scheduled_commands.top().cmd;
+			scheduled_commands.pop();
+
+			std::cout << "\nex: |" << msg.dump(2) << "|" << std::endl;
+
+			if (msg["cmd"] == "application") {
+				if (msg["val"] == "stop") {
+					stream_shutdown = true;
+				}
+			}
+
+			if (msg["cmd"] == "record") {
+				if (msg["val"] == "startrec") {
+					record_state.StartRecording(msg["file"].get<std::string>(), stream_config);
+				}
+
+				if (msg["val"] == "stoprec") {
+					record_state.StopRecording();
+				}
+
+				if (msg["val"] == "startplay") {
+					record_state.StartReplaying(msg["file"]);
+				}
+
+				if (msg["val"] == "stopplay") {
+					record_state.StopReplaying();
+				}
+			}
+		}
+	}
+
 
 	void RGBDStreamer::Exit() {
 		stream_shutdown = true;
@@ -91,7 +131,47 @@ namespace oi { namespace core { namespace rgbd {
 		return data_len;
 	}
 
+	int RGBDStreamer::_SendAudioFrame(unsigned int sequence, float * samples, size_t n_samples, unsigned short freq, unsigned short channels) {
+		audioSamplesCounter += n_samples;
+
+		oi::core::network::DataContainer * dc;
+		if (!client->GetFreeWriteContainer(&dc)) {
+			std::cout << "\nERROR: No free buffers available" << std::endl;
+			return -1;
+		}
+
+		audio_header.channels = channels;
+		audio_header.frequency = freq;
+		audio_header.samples = n_samples;
+		audio_header.sequence = sequence;
+		memcpy(&(dc->dataBuffer[0]), &audio_header, sizeof(audio_header));
+		size_t writeOffset = sizeof(audio_header);
+
+
+		memcpy(&(dc->dataBuffer[writeOffset]), samples, sizeof(float) * n_samples);
+		writeOffset += sizeof(float) * n_samples;
+		/*
+		for (int i = 0; i < n_samples; i++) {
+			unsigned short sample = (unsigned short) (samples[i] * 32767);
+			memcpy(&(dc->dataBuffer[writeOffset]), &sample, sizeof(sample));
+			writeOffset += sizeof(sample);
+		}*/
+
+		size_t data_len = writeOffset; // 16 Bit per sample
+		dc->_data_end = data_len;
+		client->QueueForSending(&dc);
+		return data_len;
+	}
+
 	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata) {
+		return _SendFrame(sequence, rgbdata, depthdata, NULL);
+	}
+
+	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned short * depthdata) {
+		return _SendFrame(sequence, rgbdata, NULL, depthdata);
+	}
+
+	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata_any, unsigned short * depthdata_ushort) {
 		std::ostream * data_writer = NULL;
 		std::ostream * meta_writer = NULL;
 
@@ -191,18 +271,26 @@ namespace oi { namespace core { namespace rgbd {
 			memcpy(dc_depth->dataBuffer, &rgbd_header, headerSize);
 			size_t writeOffset = headerSize;
 
-			size_t depthLineSizeR = frame_width() * raw_depth_stride();
-			size_t depthLineSizeW = frame_width() * 2;
-			size_t readOffset = startRow*depthLineSizeR;
-			for (int line = startRow; line < endRow; line++) {
-				for (int i = 0; i < frame_width(); i++) {
-					float depthValue = 0;
-					memcpy(&depthValue, &depthdata[readOffset + i * 4], sizeof(depthValue));
-					unsigned short depthValueShort = (unsigned short)(depthValue);
-					memcpy(&(dc_depth->dataBuffer[writeOffset + i * 2]), &depthValueShort, sizeof(depthValueShort));
+			if (depthdata_any != NULL) {
+				size_t depthLineSizeR = frame_width() * raw_depth_stride();
+				size_t depthLineSizeW = frame_width() * 2;
+				size_t readOffset = startRow*depthLineSizeR;
+				for (int line = startRow; line < endRow; line++) {
+					for (int i = 0; i < frame_width(); i++) {
+						float depthValue = 0;
+						memcpy(&depthValue, &depthdata_any[readOffset + i * 4], sizeof(depthValue));
+						unsigned short depthValueShort = (unsigned short)(depthValue);
+						memcpy(&(dc_depth->dataBuffer[writeOffset + i * 2]), &depthValueShort, sizeof(depthValueShort));
+					}
+					writeOffset += depthLineSizeW;
+					readOffset += depthLineSizeR;
 				}
-				writeOffset += depthLineSizeW;
-				readOffset += depthLineSizeR;
+			} else if (depthdata_ushort != NULL) {
+				size_t startRowStart = startRow * frame_width();
+				// for pixel (in all lines), two bytes:
+				size_t bytesToCopy = (endRow - startRow) * frame_width() * sizeof(depthdata_ushort[0]);
+				memcpy(&(dc_depth->dataBuffer[writeOffset]), &(depthdata_ushort[startRowStart]), bytesToCopy);
+				writeOffset += bytesToCopy;
 			}
 
 			int d_data_len = writeOffset;
@@ -313,35 +401,28 @@ namespace oi { namespace core { namespace rgbd {
 		if (!client->DequeueForReading(&dc)) return;
 
 		std::string raw((char *) &(dc->dataBuffer[dc->data_start()]), dc->data_end() - dc->data_start());
-		std::cout << "\n|" << raw << "|" << std::endl;
+		std::cout << "\nin: |" << raw << "|" << std::endl;
 
 		if (!HandleData(dc)) {
+
+
 			nlohmann::json msg = nlohmann::json::parse(
 				&(dc->dataBuffer[dc->data_start()]),
 				&(dc->dataBuffer[dc->data_end()]));
-			
-			if (msg["cmd"] == "application") {
-				if (msg["val"] == "stop") {
-					stream_shutdown = true;
-				}
-			}
+			if (msg.find("cmd") != msg.end() && msg["cmd"].is_string()) {
+				ScheduledCommand sc;
+				sc.cmd = msg;
 
-			if (msg["cmd"] == "record") {
-				if (msg["val"] == "startrec") {
-					record_state.StartRecording(msg["file"], stream_config);
-				}
-
-				if (msg["val"] == "stoprec") {
-					record_state.StopRecording();
+				if (msg.find("time") != msg.end() && msg["time"].is_number()) {
+					sc.time = std::chrono::milliseconds(msg["time"].get<long long>());
+					std::cout << "\nScheduled message in milliseconds: " << (sc.time - NOW()).count() << std::endl;
+				} else {
+					sc.time = NOW();
 				}
 
-				if (msg["val"] == "startplay") {
-					record_state.StartReplaying(msg["file"]);
-				}
-
-				if (msg["val"] == "stopplay") {
-					record_state.StopReplaying();
-				}
+				scheduled_commands.push(sc);
+			} else {
+				std::cerr << "\nERROR: Unknown JSON message:\n" << msg.dump(2) << std::endl;
 			}
 		}
 
@@ -361,7 +442,7 @@ namespace oi { namespace core { namespace rgbd {
 		stream_config.Fy = device_fy();
 		stream_config.DepthScale = device_depth_scale();
 		std::string guid = device_guid();
-        memcpy(&(stream_config.guid[0]), guid.c_str(), guid.length());
+        memcpy(&(stream_config.guid[0]), guid.c_str(), guid.length()+1); // +1 for null terminator
 
 		config_msg_buf = new unsigned char[sizeof(stream_config)];
 	}
@@ -374,11 +455,12 @@ namespace oi { namespace core { namespace rgbd {
 		std::string remotePortParam("-rp");
 		std::string remoteHostParam("-rh");
 		std::string serialParam("-sn");
-		
-		std::string maxDepthParam("-d");
-		std::string pipelineParam("-p");
-		std::string fileDumpParam("-o");
-		std::string recordPathParam("-rp");
+		std::string pipelineParam("-pp");
+		std::string maxDepthParam("-md");
+
+		std::string fileSaveParam("-o");
+		std::string fileLoadParam("-i");
+		std::string filePathParam("-d");
 
 		for (int count = 1; count < argc; count += 2) {
 			if (socketIDParam.compare(argv[count]) == 0) {
@@ -393,12 +475,14 @@ namespace oi { namespace core { namespace rgbd {
 				this->deviceSerial = argv[count + 1];
 			} else if (pipelineParam.compare(argv[count]) == 0) {
 				this->pipeline = argv[count + 1];
-			} else if (recordPathParam.compare(argv[count]) == 0) {
-				this->recordPath = argv[count + 1];
+			} else if (filePathParam.compare(argv[count]) == 0) {
+				this->filePath = argv[count + 1];
 			} else if (maxDepthParam.compare(argv[count]) == 0) {
 				this->maxDepth = std::stof(argv[count + 1]);
-			} else if (fileDumpParam.compare(argv[count]) == 0) {
-				this->fileDump = argv[count + 1];
+			} else if (fileSaveParam.compare(argv[count]) == 0) {
+				this->fileSave = argv[count + 1];
+			} else if (fileLoadParam.compare(argv[count]) == 0) {
+				this->fileLoad = argv[count + 1];
 			} else if (useMMParam.compare(argv[count]) == 0) {
 				this->useMatchMaking = std::stoi(argv[count + 1])==1;
 			} else {
@@ -410,7 +494,6 @@ namespace oi { namespace core { namespace rgbd {
 
 
 	RecordState::RecordState() {
-		std::cout << "init record state" << std::endl;
 		_recording = false;
 		_replaying = false;
 		loop = true;
@@ -559,5 +642,8 @@ namespace oi { namespace core { namespace rgbd {
 		return _name;
 	}
 
+	bool rgbd::ScheduledCommand::operator()(ScheduledCommand left, ScheduledCommand right) {
+		return left.time > right.time;
+	}
 
 } } }
