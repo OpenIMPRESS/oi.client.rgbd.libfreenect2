@@ -34,11 +34,31 @@ namespace oi { namespace core { namespace rgbd {
 			// ...and join it at the end?
 			//   replayFrameThread.join()?
 			if (record_state.recording() || (!record_state.recording() && !record_state.replaying())) {
-				sentBytes = SendFrame();
+
+				// Write meta files
+				std::ostream * meta_writer = record_state.meta_writer();
+				std::ostream * rgbd_writer = record_state.rgbd_writer();
+				std::ostream * audio_writer = record_state.audio_writer();
+
+				if ((unsigned long) rgbd_writer->tellp() == record_state._last_rgbd_pos) {
+					// no new depth frame, don't update meta.
+				} else {
+					META_STRUCT frame_meta;
+					frame_meta.timestamp = NOW();
+					frame_meta.memory_pos_rgbd = rgbd_writer->tellp();
+					record_state._last_rgbd_pos = frame_meta.memory_pos_rgbd;
+					if (supports_audio())
+						 frame_meta.memory_pos_audio = audio_writer->tellp();
+					else frame_meta.memory_pos_audio = 0;
+					frame_meta.frame_nr = record_state.next_rec_frame_nr();
+					frame_meta.payload_size = 0;
+					meta_writer->write((const char*)&frame_meta, sizeof(frame_meta)); // [memory_pos (unsigned long=8bytes)]
+				}
+				sentBytes += SendFrame(); // SendFrame implementations call _SendDepthFrame & _SendAudioFrame
 			}
 
 			if (record_state.replaying() && NOW() >= record_state._replay_next_frame) {
-				sentBytes = ReplayNextFrame();
+				sentBytes += ReplayNextFrame();
 			}
 
 			if (sentBytes > 0) {
@@ -63,7 +83,7 @@ namespace oi { namespace core { namespace rgbd {
 				fpsCounter = 0;
 				bytesCounter = 0;
 				audioSamplesCounter = 0;
-				if (SendConfig() <= 0) stream_shutdown = true;
+				if (!record_state.replaying() && SendConfig() <= 0) stream_shutdown = true;
 			}
 
 		}
@@ -94,11 +114,36 @@ namespace oi { namespace core { namespace rgbd {
 				}
 
 				if (msg["val"] == "startplay") {
-					record_state.StartReplaying(msg["file"]);
+					if (msg["slice"].get<bool>()) {
+						TimeSpecification ts = REL;
+						std::chrono::milliseconds tStart = std::chrono::milliseconds(msg["sliceStart"].get<long long>());
+						std::chrono::milliseconds tEnd = std::chrono::milliseconds(msg["sliceEnd"].get<long long>()); ;
+						if (record_state.StartReplaying(msg["file"]), tStart, tEnd, ts) {
+							SendConfig(&(record_state.current_replay_file->config()));
+						}
+					} else {
+						if (record_state.StartReplaying(msg["file"])) {
+							SendConfig(&(record_state.current_replay_file->config()));
+						}
+					}
 				}
 
 				if (msg["val"] == "stopplay") {
 					record_state.StopReplaying();
+					SendConfig();
+				}
+			}
+
+
+			if (msg["cmd"] == "extrinsics") {
+				if (msg["val"] == "update") {
+					stream_config.Px = msg["x"].get<float>();
+					stream_config.Py = msg["y"].get<float>();
+					stream_config.Pz = msg["z"].get<float>();
+					stream_config.Qx = msg["qx"].get<float>();
+					stream_config.Qy = msg["qy"].get<float>();
+					stream_config.Qz = msg["qz"].get<float>();
+					stream_config.Qw = msg["qw"].get<float>();
 				}
 			}
 		}
@@ -118,20 +163,30 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	int RGBDStreamer::SendConfig() {
+		return SendConfig(&stream_config);
+	}
+
+	int RGBDStreamer::SendConfig(CONFIG_STRUCT * config) {
 		oi::core::network::DataContainer * dc;
 		if (!client->GetFreeWriteContainer(&dc)) {
 			std::cout << "\nERROR: No free buffers available" << std::endl;
 			return -1;
 		}
 
-		int data_len = sizeof(stream_config);
-		memcpy(dc->dataBuffer, &stream_config, data_len);
+		int data_len = sizeof(*config);
+		memcpy(dc->dataBuffer, config, data_len);
 		dc->_data_end = data_len;
 		client->QueueForSending(&dc);
 		return data_len;
 	}
 
 	int RGBDStreamer::_SendAudioFrame(unsigned int sequence, float * samples, size_t n_samples, unsigned short freq, unsigned short channels) {
+		std::ostream * audio_writer = NULL;
+		if (record_state.recording()) {
+			audio_writer = record_state.audio_writer();
+		}
+
+		
 		audioSamplesCounter += n_samples;
 
 		oi::core::network::DataContainer * dc;
@@ -139,6 +194,7 @@ namespace oi { namespace core { namespace rgbd {
 			std::cout << "\nERROR: No free buffers available" << std::endl;
 			return -1;
 		}
+		dc->dataType = "_SendAudioFrame";
 
 		audio_header.channels = channels;
 		audio_header.frequency = freq;
@@ -146,10 +202,17 @@ namespace oi { namespace core { namespace rgbd {
 		audio_header.sequence = sequence;
 		memcpy(&(dc->dataBuffer[0]), &audio_header, sizeof(audio_header));
 		size_t writeOffset = sizeof(audio_header);
-
+		unsigned int  audio_block_size = sizeof(float) * n_samples;
 
 		memcpy(&(dc->dataBuffer[writeOffset]), samples, sizeof(float) * n_samples);
-		writeOffset += sizeof(float) * n_samples;
+		writeOffset += audio_block_size;
+
+
+		if (audio_writer != NULL) {
+			unsigned char* audio_block = &(dc->dataBuffer[headerSize]);
+			audio_writer->write((const char*)audio_block, audio_block_size);
+		}
+
 		/*
 		for (int i = 0; i < n_samples; i++) {
 			unsigned short sample = (unsigned short) (samples[i] * 32767);
@@ -157,43 +220,31 @@ namespace oi { namespace core { namespace rgbd {
 			writeOffset += sizeof(sample);
 		}*/
 
-		size_t data_len = writeOffset; // 16 Bit per sample
+		size_t data_len = writeOffset;
 		dc->_data_end = data_len;
 		client->QueueForSending(&dc);
 		return data_len;
 	}
 
-	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata) {
-		return _SendFrame(sequence, rgbdata, depthdata, NULL);
+	int RGBDStreamer::_SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata) {
+		return _SendRGBDFrame(sequence, rgbdata, depthdata, NULL);
 	}
 
-	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned short * depthdata) {
-		return _SendFrame(sequence, rgbdata, NULL, depthdata);
+	int RGBDStreamer::_SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned short * depthdata) {
+		return _SendRGBDFrame(sequence, rgbdata, NULL, depthdata);
 	}
 
-	int RGBDStreamer::_SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata_any, unsigned short * depthdata_ushort) {
-		std::ostream * data_writer = NULL;
-		std::ostream * meta_writer = NULL;
+	int RGBDStreamer::_SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata_any, unsigned short * depthdata_ushort) {
+		std::ostream * rgbd_writer = NULL;
 
 		if (record_state.recording()) {
-			data_writer = record_state.data_writer();
-			meta_writer = record_state.meta_writer();
+			rgbd_writer = record_state.rgbd_writer();
 		}
 
 		int res = 0;
 		std::chrono::milliseconds now = NOW();
 		std::chrono::milliseconds delta = now - _prev_frame;
 		_prev_frame = now;
-
-		if (meta_writer != NULL && data_writer != NULL) {
-			META_STRUCT frame_meta;
-			frame_meta.timestamp = now;
-			frame_meta.memory_pos = data_writer->tellp();
-			frame_meta.frame_nr = record_state.next_rec_frame_nr();
-			frame_meta.payload_size = 0;
-			meta_writer->write((const char*)&frame_meta, sizeof(frame_meta)); // [memory_pos (unsigned long=8bytes)]
-
-		}
 
 		unsigned short deltaValue = (unsigned short) delta.count();
 		if (delta.count() >= 60000) deltaValue = 0; // Just to be sure that we don't overflow...
@@ -213,6 +264,7 @@ namespace oi { namespace core { namespace rgbd {
 			std::cout << "\nERROR: No free buffers available" << std::endl;
 			return -1;
 		}
+		dc_rgb->dataType = "_SendRGBDFrame (rgb)";
 
 		memcpy(dc_rgb->dataBuffer, &rgbd_header, headerSize);
 
@@ -228,13 +280,13 @@ namespace oi { namespace core { namespace rgbd {
 		int c_data_len = headerSize + _jpegSize;
 		dc_rgb->_data_end = c_data_len;
 
-		if (data_writer != NULL) {
+		if (rgbd_writer != NULL) {
 			unsigned int jpeg_size = (unsigned int)_jpegSize;
-			data_writer->write((const char*)&deltaValue, sizeof(rgbd_header.delta_t)); // [delta_t (unsigned short)]
-			data_writer->write((const char*)&rgbd_header.startRow, sizeof(rgbd_header.startRow)); // [color_start_l (unsigned short)]
-			data_writer->write((const char*)&rgbd_header.endRow, sizeof(rgbd_header.endRow)); // [color_end_l (unsigned short)]
-			data_writer->write((const char*)&jpeg_size, sizeof(jpeg_size)); // [color_size  (unsigned int)]
-			data_writer->write((const char*)_compressedImage, jpeg_size); // [color_data ...]
+			rgbd_writer->write((const char*)&deltaValue, sizeof(rgbd_header.delta_t)); // [delta_t (unsigned short)]
+			rgbd_writer->write((const char*)&rgbd_header.startRow, sizeof(rgbd_header.startRow)); // [color_start_l (unsigned short)]
+			rgbd_writer->write((const char*)&rgbd_header.endRow, sizeof(rgbd_header.endRow)); // [color_end_l (unsigned short)]
+			rgbd_writer->write((const char*)&jpeg_size, sizeof(jpeg_size)); // [color_size  (unsigned int)]
+			rgbd_writer->write((const char*)_compressedImage, jpeg_size); // [color_data ...]
 		}
 
 		if (!record_state.replaying()) {
@@ -249,9 +301,9 @@ namespace oi { namespace core { namespace rgbd {
 		// Send Depth
 		rgbd_header.msgType = 0x03;
 
-		if (data_writer != NULL) {
+		if (rgbd_writer != NULL) {
 			unsigned short npackets = (unsigned short)(frame_height() + linesPerMessage - 1) / linesPerMessage; // round up division
-			data_writer->write((const char*)&npackets, sizeof(npackets)); // [n_depth_packets(unsigned short)]
+			rgbd_writer->write((const char*)&npackets, sizeof(npackets)); // [n_depth_packets(unsigned short)]
 		}
 
 		for (unsigned int startRow = 0; startRow < frame_height(); startRow += linesPerMessage) {
@@ -267,6 +319,8 @@ namespace oi { namespace core { namespace rgbd {
 				std::cout << "\nERROR: No free buffers available" << std::endl;
 				return -1;
 			}
+
+			dc_depth->dataType = "_SendRGBDFrame (depth)";
 
 			memcpy(dc_depth->dataBuffer, &rgbd_header, headerSize);
 			size_t writeOffset = headerSize;
@@ -296,13 +350,13 @@ namespace oi { namespace core { namespace rgbd {
 			int d_data_len = writeOffset;
 			dc_depth->_data_end = d_data_len;
 
-			if (data_writer != NULL) {
+			if (rgbd_writer != NULL) {
 				unsigned char* _depthBlock = &(dc_depth->dataBuffer[headerSize]);
 				unsigned int depth_block_size = (unsigned int) (writeOffset-headerSize);
-				data_writer->write((const char*)&rgbd_header.startRow, sizeof(rgbd_header.startRow)); // [depth_start_l (unsigned short)]
-				data_writer->write((const char*)&rgbd_header.endRow, sizeof(rgbd_header.endRow)); // [depth_end_l (unsigned short)]
-				data_writer->write((const char*)&depth_block_size, sizeof(depth_block_size)); // [depth_size  (unsigned int)]
-				data_writer->write((const char*)_depthBlock, depth_block_size); // [depth_data ...]
+				rgbd_writer->write((const char*)&rgbd_header.startRow, sizeof(rgbd_header.startRow)); // [depth_start_l (unsigned short)]
+				rgbd_writer->write((const char*)&rgbd_header.endRow, sizeof(rgbd_header.endRow)); // [depth_end_l (unsigned short)]
+				rgbd_writer->write((const char*)&depth_block_size, sizeof(depth_block_size)); // [depth_size  (unsigned int)]
+				rgbd_writer->write((const char*)_depthBlock, depth_block_size); // [depth_data ...]
 			}
 
 			if (!record_state.replaying()) {
@@ -317,8 +371,7 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	int RGBDStreamer::ReplayNextFrame() {
-		std::istream * data_reader = record_state.data_reader();
-		std::chrono::milliseconds now = NOW();
+		std::ifstream * rgbd_reader = record_state.rgbd_reader();
 		int res = 0;
 
 		unsigned short delta = 0;
@@ -327,41 +380,43 @@ namespace oi { namespace core { namespace rgbd {
 		unsigned short npackets = 0;
 		unsigned int rgbLength = 0;
 		unsigned int depthLength = 0;
+		highest_sequence++;
 
 		// RGB
-		data_reader->read(reinterpret_cast<char *>(&start_l), sizeof(start_l));
-		data_reader->read(reinterpret_cast<char *>(&end_l), sizeof(end_l));
-		data_reader->read(reinterpret_cast<char *>(&rgbLength), sizeof(rgbLength));
+		rgbd_reader->read(reinterpret_cast<char *>(&start_l), sizeof(start_l));
+		rgbd_reader->read(reinterpret_cast<char *>(&end_l), sizeof(end_l));
+		rgbd_reader->read(reinterpret_cast<char *>(&rgbLength), sizeof(rgbLength));
 		// HEADER
-		record_state.replay_header.sequence = ++highest_sequence;
-		record_state.replay_header.delta_t = delta;
-		record_state.replay_header.startRow = start_l;
-		record_state.replay_header.endRow = end_l;
-		record_state.replay_header.deviceID = record_state.current_replay_file->config().deviceID;
-		record_state.replay_header.msgType = 0x04;
+		record_state.replay_rgbd_header.sequence = highest_sequence;
+		record_state.replay_rgbd_header.delta_t = delta;
+		record_state.replay_rgbd_header.startRow = start_l;
+		record_state.replay_rgbd_header.endRow = end_l;
+		record_state.replay_rgbd_header.deviceID = record_state.current_replay_file->config().deviceID;
+		record_state.replay_rgbd_header.msgType = 0x04;
 
 		oi::core::network::DataContainer * dc_rgb;
 		if (!client->GetFreeWriteContainer(&dc_rgb)) {
 			std::cout << "\nERROR: No free buffers available" << std::endl;
 			return -1;
 		}
+		dc_rgb->dataType = "Replay (rgb)";
 		
-		memcpy(dc_rgb->dataBuffer, &record_state.replay_header, headerSize);
-		data_reader->read(reinterpret_cast<char *>(&(dc_rgb->dataBuffer[headerSize])), rgbLength);
+		memcpy(dc_rgb->dataBuffer, &record_state.replay_rgbd_header, headerSize);
+		rgbd_reader->read(reinterpret_cast<char *>(&(dc_rgb->dataBuffer[headerSize])), rgbLength);
 		dc_rgb->_data_end = headerSize + rgbLength;
 		res += dc_rgb->_data_end;
 		client->QueueForSending(&dc_rgb);
 
 		// DEPTH
-		data_reader->read(reinterpret_cast<char *>(&npackets), sizeof(npackets));
-		record_state.replay_header.msgType = 0x03;
+		rgbd_reader->read(reinterpret_cast<char *>(&npackets), sizeof(npackets));
+		record_state.replay_rgbd_header.msgType = 0x03;
 
 		for (unsigned int i = 0; i < npackets; i++) {
-			data_reader->read(reinterpret_cast<char *>(&start_l), sizeof(start_l));
-			data_reader->read(reinterpret_cast<char *>(&end_l), sizeof(end_l));
-			data_reader->read(reinterpret_cast<char *>(&depthLength), sizeof(depthLength));
-			record_state.replay_header.startRow = start_l;
-			record_state.replay_header.endRow = end_l;
+			rgbd_reader->read(reinterpret_cast<char *>(&start_l), sizeof(start_l));
+			rgbd_reader->read(reinterpret_cast<char *>(&end_l), sizeof(end_l));
+			rgbd_reader->read(reinterpret_cast<char *>(&depthLength), sizeof(depthLength));
+			record_state.replay_rgbd_header.startRow = start_l;
+			record_state.replay_rgbd_header.endRow = end_l;
 
 			oi::core::network::DataContainer * dc_depth;
 			if (!client->GetFreeWriteContainer(&dc_depth)) {
@@ -369,28 +424,86 @@ namespace oi { namespace core { namespace rgbd {
 				return -1;
 			}
 
-			memcpy(dc_depth->dataBuffer, &record_state.replay_header, headerSize);
-			data_reader->read(reinterpret_cast<char *>(&(dc_depth->dataBuffer[headerSize])), depthLength);
+			dc_depth->dataType = "Replay (depth)";
+
+			memcpy(dc_depth->dataBuffer, &record_state.replay_rgbd_header, headerSize);
+			rgbd_reader->read(reinterpret_cast<char *>(&(dc_depth->dataBuffer[headerSize])), depthLength);
 			dc_depth->_data_end = headerSize + depthLength;
 			res += dc_depth->_data_end;
 			client->QueueForSending(&dc_depth);
 		}
 
-		data_reader->read(reinterpret_cast<char *>(&delta), sizeof(delta));
+		rgbd_reader->read(reinterpret_cast<char *>(&delta), sizeof(delta));
+
+		std::chrono::milliseconds now = NOW();
+		std::ifstream * audio_reader = record_state.audio_reader();
+
+		// AUDIO
+		if (audio_reader->is_open()) {
+			std::chrono::milliseconds buffer_time = std::chrono::milliseconds(1500);
+			std::chrono::milliseconds skip_time = std::chrono::milliseconds(500);
+			std::chrono::milliseconds replay_time = now - (record_state._replay_start_time);
+			while (true) {
+				unsigned long pos = audio_reader->tellg();
+				if (pos == 0) {
+					std::streamsize skip_bytes = skip_time.count() * 16 * sizeof(float);
+					audio_reader->ignore(skip_bytes);
+					pos = audio_reader->tellg();
+					std::cout << "skipped some: " << skip_bytes << std::endl;
+				}
+				// At 16kHz, we have 16 samples per millisecond, each sample being 4 bytes (float) 
+				std::chrono::milliseconds replay_sent = std::chrono::milliseconds(pos / (16 * sizeof(float)));
+				std::chrono::milliseconds buffer_catch_up = (replay_time - replay_sent) + buffer_time;
+				
+				if (buffer_catch_up.count() <= 30) break; // don't send too tiny packets
+				size_t n_samples = std::min((int)(buffer_catch_up.count()*16), 1000); // Maximum 1000 samples
+
+
+				oi::core::network::DataContainer * dc_audio;
+				if (!client->GetFreeWriteContainer(&dc_audio)) {
+					std::cout << "\nERROR: No free buffers available" << std::endl;
+					return -1;
+				}
+
+				dc_audio->dataType = "Replay (audio)";
+
+				record_state.replay_audio_header.sequence = highest_sequence++;
+				record_state.replay_audio_header.frequency = 16000;
+				record_state.replay_audio_header.channels = 1;
+				record_state.replay_audio_header.samples = n_samples;
+				audioSamplesCounter += n_samples;
+				// WRITE HEADER
+				memcpy(&(dc_audio->dataBuffer[0]), &record_state.replay_audio_header, sizeof(record_state.replay_audio_header));
+				size_t writeOffset = sizeof(record_state.replay_audio_header);
+				unsigned int  audio_block_size = sizeof(float) * n_samples;
+				// WRITE AUDIO SAMPLES
+				audio_reader->read(reinterpret_cast<char *>(&(dc_audio->dataBuffer[writeOffset])), audio_block_size);
+				writeOffset += audio_block_size;
+				dc_audio->_data_end = writeOffset;
+				res += dc_audio->_data_end;
+				client->QueueForSending(&dc_audio);
+			}
+
+		}
 
 		// denotes end of file
 		if (delta >= 60000) {
 			std::cout << "\n CLEAN END " << std::endl;
 			if (record_state.loop) {
-				data_reader->clear();
-				data_reader->seekg(0, std::ios::beg);
+				rgbd_reader->clear();
+				rgbd_reader->seekg(0, std::ios::beg);
+				if (audio_reader->is_open()) {
+					audio_reader->clear();
+					audio_reader->seekg(0, std::ios::beg);
+				}
 				unsigned short first_delta = 0;
-				data_reader->read(reinterpret_cast<char *>(&delta), sizeof(delta));
+				rgbd_reader->read(reinterpret_cast<char *>(&delta), sizeof(delta));
+				record_state._replay_start_time = oi::core::rgbd::NOW();
 			} else {
 				record_state.StopReplaying();
+				SendConfig();
 			}
 		}
-
 		record_state._replay_next_frame = now + std::chrono::milliseconds(delta);
 
 		return res;
@@ -441,6 +554,12 @@ namespace oi { namespace core { namespace rgbd {
 		stream_config.Fx = device_fx();
 		stream_config.Fy = device_fy();
 		stream_config.DepthScale = device_depth_scale();
+		stream_config.dataFlags |= RGBD_DATA;
+		if (supports_audio()) {
+			stream_config.dataFlags |= AUDIO_DATA;
+		}
+
+		stream_config.dataFlags |= LIVE_DATA;
 		std::string guid = device_guid();
         memcpy(&(stream_config.guid[0]), guid.c_str(), guid.length()+1); // +1 for null terminator
 
@@ -499,16 +618,24 @@ namespace oi { namespace core { namespace rgbd {
 		loop = true;
 	}
 
-	std::ostream * RecordState::data_writer() {
-		return &_out_data;
+	std::ofstream * RecordState::rgbd_writer() {
+		return &_out_rgbd;
 	}
 
-	std::ostream * RecordState::meta_writer() {
+	std::ofstream * RecordState::audio_writer() {
+		return &_out_audio;
+	}
+
+	std::ofstream * RecordState::meta_writer() {
 		return &_out_meta;
 	}
 
-	std::ifstream * RecordState::data_reader() {
-		return &_in_data;
+	std::ifstream * RecordState::rgbd_reader() {
+		return &_in_rgbd;
+	}
+
+	std::ifstream * RecordState::audio_reader() {
+		return &_in_audio;
 	}
 
 	bool RecordState::recording() {
@@ -543,46 +670,73 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	bool RecordState::StartRecording(std::string name, CONFIG_STRUCT config) {
+		if (_replaying) {
+		}
+
 		if (_recording) {
 			std::cerr << "\nCannot start recording with name " << name << ". Already recording." << std::endl;
 			return false;
 		}
 		if (files_meta.find(name) != files_meta.end()) {
-			std::cerr << "\nCannot start recording. Name " << name << " already exists." << std::endl;
-			return false;
+			if (name == "default") {
+				std::cout << "\nWARNING: overwriting default file." << std::endl;
+				if (current_replay_file != NULL && current_replay_file->name() == name) {
+					StopReplaying();
+				}
+				files_meta.erase(name);
+			} else {
+				std::cerr << "\nCannot start recording. Name " << name << " already exists." << std::endl;
+				return false;
+			}
 		}
 
-		std::string filename_data = PATH + name + DATA_SUFFIX;
-		std::string filename_meta = PATH + name + META_SUFFIX;
-		_next_frame = name;
+		std::string filename_audio = PATH + name + AUDIO_SUFFIX;
+		std::string filename_rgbd  = PATH + name + RGBD_SUFFIX;
+		std::string filename_meta  = PATH + name + META_SUFFIX;
 		_current_frame = 0;
-		_out_data.open(filename_data, std::ios::binary | std::ios::out | std::ios::trunc);
+		_out_rgbd.open(filename_rgbd, std::ios::binary | std::ios::out | std::ios::trunc);
 		_out_meta.open(filename_meta, std::ios::binary | std::ios::out | std::ios::trunc);
+		if (config.dataFlags & AUDIO_DATA) {
+			_out_audio.open(filename_audio, std::ios::binary | std::ios::out | std::ios::trunc);
+		}
 		unsigned short version = 1; // TODO: make this global
 		_out_meta.write((const char*) &version, sizeof(version));
-		_out_meta.write((const char*) &config, sizeof(config));
+
+		config.dataFlags &= ~LIVE_DATA; // Lazy, should make a copy?
+		_out_meta.write((const char*) &config,  sizeof(config));
+		config.dataFlags |= LIVE_DATA;
+
+		_last_rgbd_pos = 0;
 		_current_recording_name = name;
 		_recording = true;
+		std::cout << "\nINFO: Started Recording " << name << std::endl;
 		return true;
 	}
 
 	bool RecordState::StopRecording() {
 		if (!_recording) return false;
-
+		bool res = true;
 		unsigned short last_delta = 60000;
-		_out_data.write((const char*)&last_delta, sizeof(last_delta)); // [memory_pos (unsigned long=8bytes)]
+		_out_rgbd.write((const char*)&last_delta, sizeof(last_delta)); // [memory_pos (unsigned long=8bytes)]
+		if (_out_audio.is_open()) {
+			std::cout << "Closed audio file." << std::endl;
+			_out_audio.close();
+			_out_audio.clear();
+		}
 
-		_out_data.close();
-		_out_data.clear();
+		_out_rgbd.close();
+		_out_rgbd.clear();
 		_out_meta.close();
 		_out_meta.clear();
 		_recording = false;
-		_current_recording_name = "";
-		if (!LoadMeta(_next_frame)) {
+		if (!LoadMeta(_current_recording_name)) {
 			std::cerr << "Stopped recording but failed to load Meta" << std::endl;
-			return false;
+			res = false;
+		} else {
+			std::cout << "\nINFO: Stopped Recording " << _current_recording_name << std::endl;
 		}
-		return true;
+		_current_recording_name = "";
+		return res;
 	}
 
 	bool RecordState::StartReplaying(std::string name) {
@@ -595,16 +749,24 @@ namespace oi { namespace core { namespace rgbd {
 			StopReplaying();
 		}
 
-		std::string filename_data = PATH + name + DATA_SUFFIX;
-		std::string filename_meta = PATH + name + META_SUFFIX;
-		_in_data.open(filename_data, std::ios::binary | std::ios::in);
-		if (files_meta.find(name) == files_meta.end() && (!LoadMeta(name) || _in_data.fail())) {
+		std::string filename_rgbd = PATH + name + RGBD_SUFFIX;
+		std::string filename_audio = PATH + name + AUDIO_SUFFIX;
+
+		_in_rgbd.open(filename_rgbd, std::ios::binary | std::ios::in);
+		if (files_meta.find(name) == files_meta.end() && (!LoadMeta(name) || _in_rgbd.fail())) {
 			std::cout << "\nERROR: Failed to open \"" << name << "\" for replaying" << std::endl;
 		}
 
+
+		_in_audio.open(filename_audio, std::ios::binary | std::ios::in);
+		if (_in_audio.fail()) {
+			std::cout << "\nNo audio file found. Won't replay any audio." << std::endl;
+		}
+
 		unsigned short first_delta = 0;
-		_in_data.read(reinterpret_cast<char *>(&first_delta), sizeof(first_delta));
-		_replay_next_frame = oi::core::rgbd::NOW() + std::chrono::milliseconds(first_delta);
+		_in_rgbd.read(reinterpret_cast<char *>(&first_delta), sizeof(first_delta));
+		_replay_start_time = oi::core::rgbd::NOW();
+		_replay_next_frame = _replay_start_time + std::chrono::milliseconds(first_delta);
 
 		_replay_config = files_meta[name].config();
 		current_replay_file = &files_meta[name];
@@ -612,10 +774,16 @@ namespace oi { namespace core { namespace rgbd {
 		return true;
 	}
 
+	bool RecordState::StartReplaying(std::string name, std::chrono::milliseconds startSlice, std::chrono::milliseconds endSlice, TimeSpecification ts) {
+		return false;
+	}
+
 	bool RecordState::StopReplaying() {
 		if (!_replaying) return false;
-		_in_data.close();
-		_in_data.clear();
+		_in_rgbd.close();
+		_in_rgbd.clear();
+		_in_audio.close();
+		_in_audio.clear();
 		current_replay_file = NULL;
 		_replaying = false;
 	}
@@ -634,7 +802,6 @@ namespace oi { namespace core { namespace rgbd {
 			in_meta->ignore(frame_meta.payload_size);
 			if (in_meta->eof()) break;
 			_frames.push_back(frame_meta);
-			std::cout << std::endl;
 		}
 	}
 

@@ -139,7 +139,9 @@ namespace oi { namespace core { namespace network {
 
 	bool UDPBase::GetFreeWriteContainer(DataContainer ** container) {
 		std::unique_lock<std::mutex> lk(send_mutex);
-		if (unused_send.empty()) return false;
+		if (unused_send.empty()) {
+			return false;
+		}
 		*container = unused_send.front();
 		unused_send.pop();
 		return true;

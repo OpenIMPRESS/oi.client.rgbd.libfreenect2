@@ -9,6 +9,12 @@
 
 namespace oi { namespace core { namespace rgbd {
 
+	const unsigned char RGBD_DATA =  1 << 0;
+	const unsigned char AUDIO_DATA = 1 << 1;
+	const unsigned char LIVE_DATA =  1 << 2;
+
+	enum TimeSpecification { FRAME, REL, ABS };
+
 	static std::chrono::milliseconds NOW();
 
 	typedef struct AUDIO_HEADER_STRUCT {
@@ -33,7 +39,8 @@ namespace oi { namespace core { namespace rgbd {
 
 	typedef struct META_STRUCT { // DO NOT REARRANGE THESE!
 		std::chrono::milliseconds timestamp; // 00-07
-		unsigned long memory_pos; // 08-15
+		unsigned long memory_pos_rgbd; // 08-15
+		unsigned long memory_pos_audio; // 08-15
 		unsigned int frame_nr; // 16-19
 		unsigned int payload_size; // 20-23
 	} META_STRUCT;
@@ -49,7 +56,7 @@ namespace oi { namespace core { namespace rgbd {
 		unsigned char msgType = 0x11;    // 00 - ConfigBETA!!
 		unsigned char deviceID = 0x00;   // 01
 		unsigned char deviceType = 0x02; // 02
-		unsigned char unused1 = 0x00;    // 03    => for consistent alignment
+		unsigned char dataFlags = 0x00;  // 03    => for consistent alignment
 		unsigned short frameWidth = 0;   // 04-05
 		unsigned short frameHeight = 0;  // 06-07
 		unsigned short maxLines = 0;     // 08-09
@@ -96,7 +103,8 @@ namespace oi { namespace core { namespace rgbd {
 		std::chrono::milliseconds endTime(); // unix timestamp at end
 		std::chrono::milliseconds duration(); // recording duration in ms
 		unsigned int frame_count(); // number of frames
-		unsigned long getpos(unsigned long time); // return memory position of frame nearest t;
+		unsigned long getAudioPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
+		unsigned long getRGBDPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
 	private:
 		void Load(std::string name, std::ifstream * in_meta);
 		std::string _name;
@@ -114,22 +122,25 @@ namespace oi { namespace core { namespace rgbd {
 		bool StopRecording();
 		bool StartRecording(std::string name, oi::core::rgbd::CONFIG_STRUCT config);
 		bool StartReplaying(std::string name);
+		bool StartReplaying(std::string name, std::chrono::milliseconds startSlice, std::chrono::milliseconds endSlice, TimeSpecification ts);
 		bool StopReplaying();
 		bool recording();
 		bool replaying();
 
 		unsigned int next_rec_frame_nr();
 
-		std::ostream * data_writer();
-		std::ostream * audio_writer();
-		std::ostream * meta_writer();
-		std::ifstream * data_reader();
+		std::ofstream * rgbd_writer();
+		std::ofstream * audio_writer();
+		std::ofstream * meta_writer();
+		std::ifstream * rgbd_reader();
 		std::ifstream * audio_reader();
 		CONFIG_STRUCT * replay_config();
 		std::string PATH;
-		const std::string DATA_SUFFIX =  ".rgbd.data";
-		const std::string META_SUFFIX = ".rgbd.meta";
-		RGBD_HEADER_STRUCT replay_header;
+		const std::string RGBD_SUFFIX =  ".oi.rgbd";
+		const std::string META_SUFFIX = ".oi.meta";
+		const std::string AUDIO_SUFFIX = ".oi.audio";
+		RGBD_HEADER_STRUCT replay_rgbd_header;
+		AUDIO_HEADER_STRUCT replay_audio_header;
 		FileMeta * current_replay_file;
 		bool loop;
 	private:
@@ -141,11 +152,14 @@ namespace oi { namespace core { namespace rgbd {
 		bool _replaying;
 		std::string _current_recording_name = "";
 		unsigned int _current_frame;
-		std::ofstream _out_data;
+		std::ofstream _out_rgbd;
+		std::ofstream _out_audio;
 		std::ofstream _out_meta;
-		std::ifstream _in_data;
-		std::string _next_frame;
+		std::ifstream _in_rgbd;
+		std::ifstream _in_audio;
 		std::chrono::milliseconds _replay_next_frame;
+		std::chrono::milliseconds _replay_start_time;
+		unsigned long _last_rgbd_pos;
 	};
 
 	class RGBDStreamer {
@@ -161,14 +175,15 @@ namespace oi { namespace core { namespace rgbd {
 		virtual bool CloseDevice() = 0;
 		virtual int SendFrame() = 0;
 		int SendConfig();
+		int SendConfig(CONFIG_STRUCT * config);
 		int ReplayNextFrame();
 
 		RecordState record_state;
 	protected:
 		int _SendAudioFrame(unsigned int sequence, float * samples, size_t n_samples, unsigned short freq, unsigned short channels);
-		int _SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata);
-		int _SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned short * depthdata);
-		int _SendFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depth_any, unsigned short * depth_ushort);
+		int _SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depthdata);
+		int _SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned short * depthdata);
+		int _SendRGBDFrame(unsigned long sequence, unsigned char * rgbdata, unsigned char * depth_any, unsigned short * depth_ushort);
 		std::priority_queue<ScheduledCommand, std::vector<ScheduledCommand>, ScheduledCommand> scheduled_commands;
 
 		virtual int frame_width() = 0;
@@ -183,6 +198,7 @@ namespace oi { namespace core { namespace rgbd {
 		virtual float device_depth_scale() = 0;
 		virtual std::string device_guid() = 0;
 		virtual TJPF color_pixel_format() = 0;
+		virtual bool supports_audio() = 0;
 
 		RGBD_HEADER_STRUCT rgbd_header;
 		AUDIO_HEADER_STRUCT audio_header;

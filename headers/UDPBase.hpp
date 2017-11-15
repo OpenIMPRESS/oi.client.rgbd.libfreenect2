@@ -18,6 +18,7 @@ namespace oi { namespace core { namespace network {
 			bufferSize = bs;
 			dataBuffer = new unsigned char[bs];
 			_data_end = 0;
+			dataType = "";
 		}
 
 		int id;
@@ -28,6 +29,7 @@ namespace oi { namespace core { namespace network {
 		unsigned int header_start();
 		unsigned int data_start();
 		unsigned int data_end();
+		std::string dataType;
 
 		unsigned int _header_start;
 		unsigned int _data_start;
