@@ -84,25 +84,21 @@ namespace oi { namespace core { namespace network {
 		while (!queued_receive.empty()) {
 			DataContainer * dc = queued_receive.front();
 			queued_receive.pop();
-			delete dc;
 		}
 
 		while (!unused_receive.empty()) {
 			DataContainer * dc = unused_receive.front();
 			unused_receive.pop();
-			delete dc;
 		}
 
 		while (!queued_receive.empty()) {
 			DataContainer * dc = queued_send.front();
 			queued_send.pop();
-			delete dc;
 		}
 
 		while (!unused_receive.empty()) {
 			DataContainer * dc = unused_send.front();
 			unused_send.pop();
-			delete dc;
 		}
 
 	}
