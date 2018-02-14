@@ -867,6 +867,9 @@ namespace oi { namespace core { namespace rgbd {
 		std::string fileLoadParam("-i");
 		std::string filePathParam("-d");
 
+
+		std::string debugLevelParam("-dl");
+
 		for (int count = 1; count < argc; count += 2) {
 			if (socketIDParam.compare(argv[count]) == 0) {
 				this->socketID = argv[count + 1];
@@ -890,6 +893,8 @@ namespace oi { namespace core { namespace rgbd {
 				this->fileLoad = argv[count + 1];
 			} else if (useMMParam.compare(argv[count]) == 0) {
 				this->useMatchMaking = std::stoi(argv[count + 1])==1;
+			} else if (debugLevelParam.compare(argv[count]) == 0) {
+				this->debugLevel = std::stoi(argv[count + 1]);
 			} else {
 				std::cout << "Unknown Parameter: " << argv[count] << std::endl;
 			}

@@ -122,6 +122,7 @@ namespace oi { namespace core { namespace rgbd {
 	public:
 		void Parse(int argc, char *argv[]);
 		bool useMatchMaking = true;
+		int debugLevel = 0;
 		std::string socketID = "kinect1";
 		std::string remoteHost = "mm.openimpress.org";
 		int remotePort = 6312;
