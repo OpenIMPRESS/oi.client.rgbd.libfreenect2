@@ -111,7 +111,7 @@ namespace oi { namespace core { namespace network {
 
 		if (magicByte == 100) {
 			json j = json::parse(&data[1], &data[len]);
-			cout << endl << j << endl;
+			//cout << endl << j << endl;
 			if (j["type"] == "answer") {
 				string host = j.at("address").get<string>();
 				string port = to_string(j.at("port").get<int>());
@@ -140,7 +140,7 @@ namespace oi { namespace core { namespace network {
 			bytePos += sizeof(partsAm);
 			memcpy(&currentPart, &data[bytePos], sizeof(currentPart));
 			bytePos += sizeof(currentPart);
-			cout << packageSequenceID << " " << partsAm << " " << currentPart << endl;
+			//cout << packageSequenceID << " " << partsAm << " " << currentPart << endl;
 
 			QueueForReading(&container);
 		} else {

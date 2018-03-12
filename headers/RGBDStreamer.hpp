@@ -150,6 +150,7 @@ namespace oi { namespace core { namespace rgbd {
 		unsigned long long getAudioPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
 		unsigned long long getRGBDPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
 		unsigned long long getBodyPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
+		unsigned long long getBIDXPosition(std::chrono::milliseconds t, TimeSpecification ts); // return memory position of frame nearest t;
 
 		std::vector<META_STRUCT> _frames;
 	private:

@@ -1156,6 +1156,8 @@ namespace oi { namespace core { namespace rgbd {
 			_pos_end_audio =    _current_replay_file->getAudioPosition(endSlice, ts);
 			_pos_start_body =   _current_replay_file->getBodyPosition(startSlice, ts);
 			_pos_end_body =     _current_replay_file->getBodyPosition(endSlice, ts);
+			_pos_start_bidx =   _current_replay_file->getBIDXPosition(startSlice, ts);
+			_pos_end_bidx =     _current_replay_file->getBIDXPosition(endSlice, ts);
 			_frame_start_rgbd = _current_replay_file->getFrameByTime(startSlice, ts);
 		} catch (int e) {
 			std::cerr << "\nERROR: Failed to start playing slice: start/end times out of range!" << std::endl;
@@ -1172,9 +1174,11 @@ namespace oi { namespace core { namespace rgbd {
 
 	void RecordState::ReplayReset() {
 		_next_replay_frame = _frame_start_rgbd;
-		_in_rgbd.clear();
-		_in_rgbd.seekg(_pos_start_rgbd, std::ios::beg);
-		
+
+		if (_in_rgbd.is_open()) {
+			_in_rgbd.clear();
+			_in_rgbd.seekg(_pos_start_rgbd, std::ios::beg);
+		}
 		if (_in_audio.is_open()) {
 			_in_audio.clear();
 			_in_audio.seekg(_pos_start_audio, std::ios::beg);
@@ -1183,13 +1187,20 @@ namespace oi { namespace core { namespace rgbd {
 			_in_body.clear();
 			_in_body.seekg(_pos_start_body, std::ios::beg);
 		}
+		if (_in_bidx.is_open()) {
+			_in_bidx.clear();
+			_in_body.seekg(_pos_start_bidx, std::ios::beg);
+		}
 		_replay_start_time = oi::core::rgbd::NOW();
 		_replay_next_frame = _replay_start_time;
 	}
 
 	bool RecordState::StopReplaying() {
-		_in_rgbd.close();
-		_in_rgbd.clear();
+
+		if (_in_rgbd.is_open()) {
+			_in_rgbd.close();
+			_in_rgbd.clear();
+		}
 		if (_in_audio.is_open()) {
 			_in_audio.close();
 			_in_audio.clear();
@@ -1198,6 +1209,11 @@ namespace oi { namespace core { namespace rgbd {
 			_in_body.close();
 			_in_body.clear();
 		}
+		if (_in_bidx.is_open()) {
+			_in_bidx.close();
+			_in_bidx.clear();
+		}
+
 		_current_replay_file = NULL;
 		_replaying = false;
 		return true;
@@ -1245,6 +1261,10 @@ namespace oi { namespace core { namespace rgbd {
 			_t = t - startTime();
 		}
 		return (*_frames_by_time.lower_bound(_t)).second;
+	}
+
+	unsigned long long FileMeta::getBIDXPosition(std::chrono::milliseconds t, TimeSpecification ts) {
+		return _frames[getFrameByTime(t, ts)].memory_pos_bidx;
 	}
 
 	unsigned long long FileMeta::getBodyPosition(std::chrono::milliseconds t, TimeSpecification ts) {
