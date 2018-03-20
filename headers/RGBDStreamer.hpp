@@ -7,7 +7,6 @@
 #include <fstream>
 #include "UDPConnector.hpp"
 #include "RecordState.hpp"
-#include "AVEncodeTest.hpp"
 
 namespace oi { namespace core { namespace rgbd {
 
