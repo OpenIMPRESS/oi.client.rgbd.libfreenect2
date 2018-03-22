@@ -21,36 +21,46 @@ namespace oi { namespace core { namespace rgbd {
 
 	enum TimeSpecification { T_FRAME, T_REL, T_ABS };
 
+	typedef struct _OI_HEADER_STRUCT {
+		uint16_t packetType = 0x0000;
+		uint16_t flags      = 0x0000;
+		uint32_t sourceID   = 0x00000000;
+		uint64_t timestamp  = 0x0000000000000000;
+		uint32_t sequenceID = 0x00000000;
+		uint16_t nParts     = 0x0001;
+		uint16_t part       = 0x0001;
+	} OI_HEADER_STRUCT; // 24 bytes
 
 	typedef struct _AUDIO_HEADER_STRUCT { // DO NOT REARRANGE THESE!
-		unsigned char   msgType = 0x07;   // 00
-		unsigned char   unused = 0x00;    // 01
-		unsigned short  frequency;        // 02-03
-		unsigned short  channels;         // 04-05
-		unsigned short  samples;          // 06-07
-		unsigned long long timestamp;     // 08-15
+		//unsigned char   msgType = 0x07;
+		//unsigned char   unused = 0x00;
+		uint16_t  frequency;          // 00-01
+		uint16_t  channels;           // 02-03
+		uint16_t  samples;            // 04-05
+		uint16_t  unused;             // 06-07
+		//unsigned long long timestamp; // 08-15
 	} AUDIO_HEADER_STRUCT;
 
 
 	typedef struct _RGBD_HEADER_STRUCT { // DO NOT REARRANGE THESE!
-		unsigned char  msgType = 0x03;   // 00 // 0x03 = Depth; 0x04 = Color; // 0x33 = BIDX
-		unsigned char  deviceID = 0x00;  // 01
-		unsigned short delta_t = 0;      // 02-03 Delta milliseconds
-		unsigned short startRow = 0;     // 04-05
-		unsigned short endRow = 0;       // 06-07
-		unsigned long long  timestamp;   // 08-15
+		//unsigned char  msgType = 0x03;   // 00 // 0x03 = Depth; 0x04 = Color; // 0x33 = BIDX
+		//unsigned char  deviceID = 0x00;  // 01
+		unsigned short delta_t = 0;      // 00-01 Delta milliseconds
+		unsigned short startRow = 0;     // 02-03
+		unsigned short endRow = 0;       // 04-05
+		//unsigned long long  timestamp;   // 08-15
 	} RGBD_HEADER_STRUCT;
 
 
 	typedef struct _META_STRUCT {             // DO NOT REARRANGE THESE!
 		std::chrono::milliseconds timestamp;  // 00-07
-		unsigned long long memory_pos_rgbd;   // 08-15
-		unsigned long long memory_pos_audio;  // 16-23
-		unsigned long long memory_pos_body;   // 24-31
-		unsigned long long memory_pos_hd;     // 32-39
-		unsigned long long memory_pos_bidx;   // 40-47
-		unsigned int  frame_nr;               // 48-51
-		unsigned int  payload_size;           // 52-55
+		uint64_t memory_pos_rgbd;   // 08-15
+		uint64_t memory_pos_audio;  // 16-23
+		uint64_t memory_pos_body;   // 24-31
+		uint64_t memory_pos_hd;     // 32-39
+		uint64_t memory_pos_bidx;   // 40-47
+		uint32_t frame_nr;          // 48-51
+		uint32_t payload_size;      // 52-55
 	} META_STRUCT;
 
 	typedef struct _BODY_STRUCT {          // DO NOT REARRANGE THESE!
@@ -68,6 +78,10 @@ namespace oi { namespace core { namespace rgbd {
 		unsigned char joints_tracked[25];  // 319-343
 	} BODY_STRUCT;
 
+
+	// BODY_HEADER: flags <= n_bodies
+
+	/*
 	typedef struct _BODY_HEADER_STRUCT {
 		unsigned char  msgType = 0x05;   // 00 // 0x05 = Body
 		unsigned char  unused1 = 0x00;   // 01
@@ -78,16 +92,17 @@ namespace oi { namespace core { namespace rgbd {
 		unsigned char  unused5 = 0x00;   // 07
 		unsigned long long timestamp;    // 08-15
 	} BODY_HEADER_STRUCT;
+	*/
 
 	typedef struct _CONFIG_STRUCT { // DO NOT REARRANGE THESE!
-		unsigned char msgType = 0x01;    // 00 
-		unsigned char deviceID = 0x00;   // 01
-		unsigned char deviceType = 0x02; // 02
-		unsigned char dataFlags = 0x00;  // 03    => for consistent alignment
+		//unsigned char msgType = 0x01;    // 00 
+		//unsigned char deviceID = 0x00;   // 01
+		//unsigned char deviceType = 0x02; // 02
+		//unsigned char dataFlags = 0x00;  // 03    => for consistent alignment
 		unsigned short frameWidth = 0;   // 04-05
 		unsigned short frameHeight = 0;  // 06-07
 		unsigned short maxLines = 0;     // 08-09
-		unsigned short unused1 = 0;      // 10-11 => for consistent alignment
+		unsigned short dataFlags = 0;    // 10-11 
 		float Cx = 0.0f;                 // 12-15
 		float Cy = 0.0f;                 // 16-19
 		float Fx = 0.0f;                 // 20-23

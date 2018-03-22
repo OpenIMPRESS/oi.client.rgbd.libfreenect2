@@ -26,12 +26,13 @@ namespace oi { namespace core { namespace rgbd {
 		* number of bytes allocated in memory. This may be different per compiler, but we explicitly pad those
 		* array with dummy properties, so there is no reason for compilers to re-align.
 		*  TODO: Make tests and move this there */
-		std::cout << "BODY_HEADER_STRUCT 16==" << sizeof(oi::core::rgbd::BODY_HEADER_STRUCT) << std::endl;
+		//std::cout << "BODY_HEADER_STRUCT 16==" << sizeof(oi::core::rgbd::BODY_HEADER_STRUCT) << std::endl;
+		std::cout << "OI_HEADER_STRUCT 24==" << sizeof(oi::core::rgbd::OI_HEADER_STRUCT) << std::endl;
 		std::cout << "BODY_STRUCT 344==" << sizeof(oi::core::rgbd::BODY_STRUCT) << std::endl;
 		std::cout << "META_STRUCT 56==" << sizeof(oi::core::rgbd::META_STRUCT) << std::endl;
-		std::cout << "RGBD_HEADER_STRUCT 16==" << sizeof(oi::core::rgbd::RGBD_HEADER_STRUCT) << std::endl;
-		std::cout << "AUDIO_HEADER_STRUCT 16==" << sizeof(oi::core::rgbd::AUDIO_HEADER_STRUCT) << std::endl;
-		std::cout << "CONFIG_STRUCT 132==" << sizeof(oi::core::rgbd::CONFIG_STRUCT) << std::endl;
+		std::cout << "RGBD_HEADER_STRUCT 6==" << sizeof(oi::core::rgbd::RGBD_HEADER_STRUCT) << std::endl;
+		std::cout << "AUDIO_HEADER_STRUCT 8==" << sizeof(oi::core::rgbd::AUDIO_HEADER_STRUCT) << std::endl;
+		std::cout << "CONFIG_STRUCT 128==" << sizeof(oi::core::rgbd::CONFIG_STRUCT) << std::endl;
 	}
 
 	void RGBDStreamer::Run() {
@@ -285,15 +286,19 @@ namespace oi { namespace core { namespace rgbd {
 		}
 		dc->dataType = "_SendAudioFrame";
 
+		static OI_HEADER_STRUCT msg_header;
+		static size_t msg_header_size = sizeof(OI_HEADER_STRUCT);
 		static AUDIO_HEADER_STRUCT audio_header;
-		static size_t header_size = sizeof(AUDIO_HEADER_STRUCT);
+		static size_t audio_header_size = sizeof(AUDIO_HEADER_STRUCT);
 
+		msg_header.timestamp = timestamp.count();
+		msg_header.packetType = 0x0411; // TODO: MOVE TO ENUM!!
+		memcpy(&(dc->dataBuffer[0]), &msg_header, msg_header_size);
 		audio_header.channels = channels;
 		audio_header.frequency = freq;
 		audio_header.samples = n_samples;
-		audio_header.timestamp = timestamp.count();
-		memcpy(&(dc->dataBuffer[0]), &audio_header, sizeof(audio_header));
-		size_t writeOffset = sizeof(audio_header);
+		memcpy(&(dc->dataBuffer[msg_header_size]), &audio_header, audio_header_size);
+		size_t writeOffset = msg_header_size + audio_header_size;
 		unsigned int  audio_block_size = sizeof(float) * n_samples;
 
 		memcpy(&(dc->dataBuffer[writeOffset]), samples, sizeof(float) * n_samples);
@@ -301,7 +306,7 @@ namespace oi { namespace core { namespace rgbd {
 
 
 		if (audio_writer != NULL) {
-			unsigned char* audio_block = &(dc->dataBuffer[header_size]);
+			unsigned char* audio_block = &(dc->dataBuffer[msg_header_size+audio_header_size]);
 			audio_writer->write((const char*)audio_block, audio_block_size);
 		}
 
@@ -325,9 +330,10 @@ namespace oi { namespace core { namespace rgbd {
 			body_writer = record_state.body_writer();
 		}
 
-		BODY_HEADER_STRUCT body_header;
-		body_header.timestamp = timestamp.count();
-		body_header.n_bodies = n_bodies;
+		static OI_HEADER_STRUCT msg_header;
+		msg_header.timestamp = timestamp.count();
+		msg_header.flags = n_bodies;
+		msg_header.packetType = 0x0313; // TODO: MOVE TO ENUM!!
 
 		oi::core::network::DataContainer * dc;
 		if (!client->GetFreeWriteContainer(&dc)) {
@@ -336,10 +342,10 @@ namespace oi { namespace core { namespace rgbd {
 		}
 		dc->dataType = "_SendBodyFrame";
 
-		size_t header_size = sizeof(BODY_HEADER_STRUCT);
+		size_t header_size = sizeof(OI_HEADER_STRUCT);
 		size_t data_size   = sizeof(BODY_STRUCT) * n_bodies;
 
-		memcpy(dc->dataBuffer, &body_header, header_size);
+		memcpy(dc->dataBuffer, &msg_header, header_size);
 		memcpy(&(dc->dataBuffer[header_size]), bodies, data_size);
 
 		dc->_data_end = header_size + data_size;
@@ -385,13 +391,14 @@ namespace oi { namespace core { namespace rgbd {
 		if (delta.count() >= 60000) deltaValue = 0; // Just to be sure that we don't overflow...
 
 
-		static RGBD_HEADER_STRUCT rgbd_header;
-		static size_t headerSize = sizeof(RGBD_HEADER_STRUCT);
-		rgbd_header.timestamp = timestamp.count();
-		rgbd_header.delta_t = deltaValue;
+		static OI_HEADER_STRUCT msg_header;
+		static size_t msg_header_size = sizeof(OI_HEADER_STRUCT);
+		msg_header.timestamp = timestamp.count();
+		msg_header.packetType = 0x0221; // TODO: MOVE TO ENUM!!
 
-		// Send color data first...
-		rgbd_header.msgType = 0x04;
+		static RGBD_HEADER_STRUCT rgbd_header;
+		static size_t rgbd_header_size = sizeof(RGBD_HEADER_STRUCT);
+		rgbd_header.delta_t = deltaValue;
 		rgbd_header.startRow = (unsigned short) 0;             // ... we can fit the whole...
 		rgbd_header.endRow = (unsigned short) frame_height(); //...RGB data in one packet
 
@@ -402,18 +409,19 @@ namespace oi { namespace core { namespace rgbd {
 		}
 		dc_rgb->dataType = "_SendRGBDFrame (rgb)";
 
-		memcpy(dc_rgb->dataBuffer, &rgbd_header, headerSize);
+		memcpy(dc_rgb->dataBuffer, &msg_header,  msg_header_size);
+		memcpy(&(dc_rgb->dataBuffer[msg_header_size]), &rgbd_header, rgbd_header_size);
 
 		// COMPRESS COLOR
-		long unsigned int _jpegSize = dc_rgb->bufferSize - headerSize;
-		unsigned char* _compressedImage = &(dc_rgb->dataBuffer[headerSize]);
+		long unsigned int _jpegSize = dc_rgb->bufferSize - (rgbd_header_size + msg_header_size);
+		unsigned char* _compressedImage = &(dc_rgb->dataBuffer[msg_header_size+rgbd_header_size]);
 
 		tjhandle _jpegCompressor = tjInitCompress();
 		tjCompress2(_jpegCompressor, rgbdata, (int)frame_width(), 0, (int)frame_height(), color_pixel_format(),
 			&_compressedImage, &_jpegSize, TJSAMP_444, JPEG_QUALITY,
 			TJFLAG_FASTDCT);
 
-		int c_data_len = headerSize + _jpegSize;
+		int c_data_len = msg_header_size + rgbd_header_size + _jpegSize;
 		dc_rgb->_data_end = c_data_len;
 
 		if (rgbd_writer != NULL) {
@@ -434,7 +442,7 @@ namespace oi { namespace core { namespace rgbd {
 		tjDestroy(_jpegCompressor);
 
 		// Send Depth
-		rgbd_header.msgType = 0x03;
+		msg_header.packetType = 0x0212; // TODO: MOVE TO ENUM!!
 
 		if (rgbd_writer != NULL) {
 			unsigned short npackets = (unsigned short)(frame_height() + linesPerMessage - 1) / linesPerMessage; // round up division
@@ -457,8 +465,10 @@ namespace oi { namespace core { namespace rgbd {
 
 			dc_depth->dataType = "_SendRGBDFrame (depth)";
 
-			memcpy(dc_depth->dataBuffer, &rgbd_header, headerSize);
-			size_t writeOffset = headerSize;
+
+			memcpy(dc_depth->dataBuffer, &msg_header, msg_header_size);
+			memcpy(&(dc_depth->dataBuffer[msg_header_size]), &rgbd_header, rgbd_header_size);
+			size_t writeOffset = msg_header_size + rgbd_header_size;
 
 			if (depthdata_any != NULL) {
 				size_t depthLineSizeR = frame_width() * raw_depth_stride();
@@ -486,8 +496,8 @@ namespace oi { namespace core { namespace rgbd {
 			dc_depth->_data_end = d_data_len;
 
 			if (rgbd_writer != NULL) {
-				unsigned char* _depthBlock = &(dc_depth->dataBuffer[headerSize]);
-				unsigned int depth_block_size = (unsigned int) (writeOffset-headerSize);
+				unsigned char* _depthBlock = &(dc_depth->dataBuffer[msg_header_size + rgbd_header_size]);
+				unsigned int depth_block_size = (unsigned int) (writeOffset - (msg_header_size + rgbd_header_size));
 				rgbd_writer->write((const char*)&rgbd_header.startRow, sizeof(rgbd_header.startRow)); // [depth_start_l (unsigned short)]
 				rgbd_writer->write((const char*)&rgbd_header.endRow, sizeof(rgbd_header.endRow)); // [depth_end_l (unsigned short)]
 				rgbd_writer->write((const char*)&depth_block_size, sizeof(depth_block_size)); // [depth_size  (unsigned int)]
@@ -516,11 +526,16 @@ namespace oi { namespace core { namespace rgbd {
 			bidx_writer = record_state.bidx_writer();
 		}
 
+		static OI_HEADER_STRUCT msg_header;
+		static size_t msg_header_size = sizeof(OI_HEADER_STRUCT);
+
 		static RGBD_HEADER_STRUCT rgbd_header;
 		static size_t header_size = sizeof(RGBD_HEADER_STRUCT);
-		rgbd_header.timestamp = timestamp.count();
+
+
+		msg_header.timestamp = timestamp.count();
+		msg_header.packetType = 0x0251;
 		rgbd_header.delta_t = 0;
-		rgbd_header.msgType = 0x33;
 		rgbd_header.startRow = (unsigned short)0;
 		rgbd_header.endRow = (unsigned short)frame_height(); 
 
@@ -531,11 +546,12 @@ namespace oi { namespace core { namespace rgbd {
 		}
 		dc->dataType = "_SendBodyIndexFrame";
 
-		memcpy(dc->dataBuffer, &rgbd_header, header_size);
+		memcpy(dc->dataBuffer, &msg_header, msg_header_size);
+		memcpy(&(dc->dataBuffer[msg_header_size]), &rgbd_header, header_size);
 
 		// COMPRESS COLOR
-		long unsigned int _jpegSize = dc->bufferSize - header_size;
-		unsigned char* _compressedImage = &(dc->dataBuffer[header_size]);
+		long unsigned int _jpegSize = dc->bufferSize - (header_size + msg_header_size);
+		unsigned char* _compressedImage = &(dc->dataBuffer[header_size + msg_header_size]);
 
 		tjhandle _jpegCompressor = tjInitCompress();
 		tjCompress2(_jpegCompressor, bidata, (int)width, 0, (int)height, pix_fmt,
@@ -548,7 +564,7 @@ namespace oi { namespace core { namespace rgbd {
 			bidx_writer->write((const char*)_compressedImage, jpeg_size);
 		}
 
-		int c_data_len = header_size + _jpegSize;
+		int c_data_len = msg_header_size + header_size + _jpegSize;
 		dc->_data_end = c_data_len;
 
 		if (!record_state.replaying()) {
@@ -632,14 +648,20 @@ namespace oi { namespace core { namespace rgbd {
 				dc_audio->dataType = "Replay (audio)";
 				static AUDIO_HEADER_STRUCT replay_audio_header;
 				static size_t header_size = sizeof(AUDIO_HEADER_STRUCT);
-				replay_audio_header.timestamp = timestamp.count();
+
+				static OI_HEADER_STRUCT replay_audio_msg_header;
+				static size_t replay_audio_msg_header_size = sizeof(AUDIO_HEADER_STRUCT);
+
+				replay_audio_msg_header.packetType = 0x0411;
+				replay_audio_msg_header.timestamp = timestamp.count();
 				replay_audio_header.frequency = 16000;
 				replay_audio_header.channels = 1;
 				replay_audio_header.samples = n_samples;
 				audioSamplesCounter += n_samples;
 				// WRITE HEADER
-				memcpy(&(dc_audio->dataBuffer[0]), &replay_audio_header, header_size);
-				size_t writeOffset = header_size;
+				memcpy(&(dc_audio->dataBuffer[0]), &replay_audio_msg_header, replay_audio_msg_header_size);
+				memcpy(&(dc_audio->dataBuffer[replay_audio_msg_header_size]), &replay_audio_header, header_size);
+				size_t writeOffset = replay_audio_msg_header_size + header_size;
 				unsigned int  audio_block_size = sizeof(float) * n_samples;
 				// WRITE AUDIO SAMPLES
 				audio_reader->read(reinterpret_cast<char *>(&(dc_audio->dataBuffer[writeOffset])), audio_block_size);
@@ -679,15 +701,18 @@ namespace oi { namespace core { namespace rgbd {
 		rgbd_reader->read(reinterpret_cast<char *>(&rgbLength), sizeof(rgbLength));
 		// HEADER
 
+		static OI_HEADER_STRUCT replay_rgbd_msg_header;
+		static size_t msg_header_size = sizeof(OI_HEADER_STRUCT);
+
 		static RGBD_HEADER_STRUCT replay_rgbd_header;
 		static size_t header_size = sizeof(RGBD_HEADER_STRUCT);
 
-		replay_rgbd_header.timestamp = timestamp.count();
+		replay_rgbd_msg_header.packetType = 0x0221;
+		replay_rgbd_msg_header.timestamp = timestamp.count();
 		replay_rgbd_header.delta_t = delta;
 		replay_rgbd_header.startRow = start_l;
 		replay_rgbd_header.endRow = end_l;
-		replay_rgbd_header.deviceID = record_state._current_replay_file->config().deviceID;
-		replay_rgbd_header.msgType = 0x04;
+		//replay_rgbd_msg_header.flags = record_state._current_replay_file->config().deviceID;
 
 		oi::core::network::DataContainer * dc_rgb;
 		if (!client->GetFreeWriteContainer(&dc_rgb)) {
@@ -695,16 +720,17 @@ namespace oi { namespace core { namespace rgbd {
 			return -1;
 		}
 		dc_rgb->dataType = "Replay (rgb)";
-		
-		memcpy(dc_rgb->dataBuffer, &replay_rgbd_header, header_size);
-		rgbd_reader->read(reinterpret_cast<char *>(&(dc_rgb->dataBuffer[header_size])), rgbLength);
-		dc_rgb->_data_end = header_size + rgbLength;
+
+		memcpy(dc_rgb->dataBuffer, &replay_rgbd_msg_header, msg_header_size);
+		memcpy(&(dc_rgb->dataBuffer[msg_header_size]), &replay_rgbd_header, header_size);
+		rgbd_reader->read(reinterpret_cast<char *>(&(dc_rgb->dataBuffer[header_size+msg_header_size])), rgbLength);
+		dc_rgb->_data_end = msg_header_size + header_size + rgbLength;
 		res += dc_rgb->_data_end;
 		client->QueueForSending(&dc_rgb);
 
 		// DEPTH
 		rgbd_reader->read(reinterpret_cast<char *>(&npackets), sizeof(npackets));
-		replay_rgbd_header.msgType = 0x03;
+		replay_rgbd_msg_header.packetType = 0x0212;
 
 		for (unsigned int i = 0; i < npackets; i++) {
 			rgbd_reader->read(reinterpret_cast<char *>(&start_l), sizeof(start_l));
@@ -721,9 +747,11 @@ namespace oi { namespace core { namespace rgbd {
 
 			dc_depth->dataType = "Replay (depth)";
 
-			memcpy(dc_depth->dataBuffer, &replay_rgbd_header, header_size);
-			rgbd_reader->read(reinterpret_cast<char *>(&(dc_depth->dataBuffer[header_size])), depthLength);
-			dc_depth->_data_end = header_size + depthLength;
+			memcpy(dc_depth->dataBuffer, &replay_rgbd_msg_header, msg_header_size);
+			memcpy(&(dc_depth->dataBuffer[msg_header_size]), &replay_rgbd_header, header_size);
+
+			rgbd_reader->read(reinterpret_cast<char *>(&(dc_depth->dataBuffer[msg_header_size + header_size])), depthLength);
+			dc_depth->_data_end = msg_header_size + header_size + depthLength;
 			res += dc_depth->_data_end;
 			client->QueueForSending(&dc_depth);
 		}
@@ -731,12 +759,15 @@ namespace oi { namespace core { namespace rgbd {
 		std::istream * body_reader = record_state.body_reader();
 
 		if (body_reader != NULL) {
-			static BODY_HEADER_STRUCT replay_body_header;
-			body_reader->read(reinterpret_cast<char *>(&replay_body_header.n_bodies), sizeof(replay_body_header.n_bodies));
+
+			static OI_HEADER_STRUCT replay_body_msg_header;
+			static size_t msg_header_size = sizeof(OI_HEADER_STRUCT);
+			body_reader->read(reinterpret_cast<char *>(&replay_body_msg_header.flags), sizeof(replay_body_msg_header.flags));
+			//static BODY_HEADER_STRUCT replay_body_header;
+			//body_reader->read(reinterpret_cast<char *>(&replay_body_header.n_bodies), sizeof(replay_body_header.n_bodies));
 			
-			replay_body_header.timestamp = timestamp.count();
-			size_t header_size = sizeof(replay_body_header);
-			size_t data_size = replay_body_header.n_bodies * sizeof(BODY_STRUCT);
+			replay_body_msg_header.timestamp = timestamp.count();
+			size_t data_size = replay_body_msg_header.flags * sizeof(BODY_STRUCT);
 
 			if (data_size > 0) {
 				oi::core::network::DataContainer * dc;
@@ -746,10 +777,10 @@ namespace oi { namespace core { namespace rgbd {
 				}
 				dc->dataType = "Replay (body)";
 
-				memcpy(&(dc->dataBuffer[0]), &replay_body_header, header_size);
-				body_reader->read(reinterpret_cast<char *>(&(dc->dataBuffer[header_size])), data_size);
+				memcpy(&(dc->dataBuffer[0]), &replay_body_msg_header, msg_header_size);
+				body_reader->read(reinterpret_cast<char *>(&(dc->dataBuffer[msg_header_size])), data_size);
 
-				dc->_data_end = data_size + header_size;
+				dc->_data_end = data_size + msg_header_size;
 				res += dc->_data_end;
 				client->QueueForSending(&dc);
 			}
