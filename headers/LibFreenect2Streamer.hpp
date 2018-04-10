@@ -35,9 +35,15 @@ namespace oi { namespace core { namespace rgbd {
 		float device_fx();
 		float device_fy();
 		float device_depth_scale();
+        
 		std::string serial;
 		std::string device_guid();
 		TJPF color_pixel_format();
+        
+        bool supports_audio();
+        bool supports_body();
+        bool supports_bidx();
+        bool supports_hd();
 
 		libfreenect2::Freenect2 * freenect2;
 		libfreenect2::Freenect2Device * dev = 0;

@@ -1,8 +1,8 @@
 #include "RGBDStreamer.hpp"
 #include "RecordState.hpp"
 #include <string>
-#include <algorithm> 
-#include "..\headers\RGBDStreamer.hpp"
+#include <algorithm>
+//#include "..\headers\RGBDStreamer.hpp"
 
 namespace oi { namespace core { namespace rgbd {
 
@@ -182,7 +182,7 @@ namespace oi { namespace core { namespace rgbd {
 
 				if (msg["val"] == "requestconfig") {
 					if (record_state.replaying()) {
-						SendConfig(&(record_state._current_replay_file->config()));
+                        SendConfig(&record_state._current_replay_file->_config);
 					} else {
 						SendConfig();
 					}
@@ -207,12 +207,12 @@ namespace oi { namespace core { namespace rgbd {
 						std::chrono::milliseconds tEnd = std::chrono::milliseconds(msg["sliceEnd"].get<long long>()); ;
 						if (record_state.StartReplaying(msg["file"], tStart, tEnd, ts)) {
 							record_state.loop = _loop;
-							SendConfig(&(record_state._current_replay_file->config()));
+                            SendConfig(&record_state._current_replay_file->_config);
 						}
 					} else {
 						if (record_state.StartReplaying(msg["file"])) {
 							record_state.loop = _loop;
-							SendConfig(&(record_state._current_replay_file->config()));
+                            SendConfig(&record_state._current_replay_file->_config);
 						}
 					}
 				}
@@ -405,6 +405,7 @@ namespace oi { namespace core { namespace rgbd {
 		memcpy(dc_rgb->dataBuffer, &rgbd_header, headerSize);
 
 		// COMPRESS COLOR
+        
 		long unsigned int _jpegSize = dc_rgb->bufferSize - headerSize;
 		unsigned char* _compressedImage = &(dc_rgb->dataBuffer[headerSize]);
 
@@ -686,7 +687,7 @@ namespace oi { namespace core { namespace rgbd {
 		replay_rgbd_header.delta_t = delta;
 		replay_rgbd_header.startRow = start_l;
 		replay_rgbd_header.endRow = end_l;
-		replay_rgbd_header.deviceID = record_state._current_replay_file->config().deviceID;
+		replay_rgbd_header.deviceID = record_state._current_replay_file->_config.deviceID;
 		replay_rgbd_header.msgType = 0x04;
 
 		oi::core::network::DataContainer * dc_rgb;
@@ -765,7 +766,7 @@ namespace oi { namespace core { namespace rgbd {
 			std::cout << "\n <EOF> " << std::endl;
 			if (record_state.loop) {
 				record_state.ReplayReset();
-				SendConfig(&(record_state._current_replay_file->config()));
+                SendConfig(&record_state._current_replay_file->_config);
 			} else {
 				record_state.StopReplaying();
 				SendConfig();
@@ -977,7 +978,7 @@ namespace oi { namespace core { namespace rgbd {
 	}
 
 	CONFIG_STRUCT * RecordState::replay_config() {
-		return &(_current_replay_file->config());
+        return &_current_replay_file->_config;
 	}
 
 	bool RecordState::LoadMeta(std::string name) {
@@ -1217,10 +1218,6 @@ namespace oi { namespace core { namespace rgbd {
 		_current_replay_file = NULL;
 		_replaying = false;
 		return true;
-	}
-
-	CONFIG_STRUCT FileMeta::config() {
-		return _config;
 	}
 
 	std::chrono::milliseconds FileMeta::frameTime(unsigned int frame) {

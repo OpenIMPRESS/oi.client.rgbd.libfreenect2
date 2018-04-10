@@ -138,7 +138,7 @@ namespace oi { namespace core { namespace rgbd {
 		friend class RecordState;
 	public:
 		std::string name(); // recording name
-		CONFIG_STRUCT config();
+        CONFIG_STRUCT _config;
 
 		std::chrono::milliseconds frameTime(unsigned int frame);
 		std::chrono::milliseconds startTime(); // unix timestamp at start
@@ -155,7 +155,6 @@ namespace oi { namespace core { namespace rgbd {
 	private:
 		void Load(std::string name, std::ifstream * in_meta);
 		std::string _name;
-		CONFIG_STRUCT _config;
 		unsigned short _recording_version;
 		std::map<std::chrono::milliseconds, unsigned int> _frames_by_time;// key is timestamp-timestamp[0]
 	};
@@ -283,7 +282,7 @@ namespace oi { namespace core { namespace rgbd {
 		virtual bool supports_bidx() = 0;
 		virtual bool supports_hd() = 0;
 
-		CONFIG_STRUCT stream_config;
+        CONFIG_STRUCT stream_config;
 		unsigned char * config_msg_buf;
 		StreamerConfig config;
 		bool stream_shutdown;

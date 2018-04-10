@@ -111,10 +111,11 @@ namespace oi { namespace core { namespace rgbd {
 			std::cerr << "\nERROR: Libfreenect2 did not provide a new frame." << std::endl;
 			return -1;
 		}
+        std::chrono::milliseconds timestamp = NOW();
 		libfreenect2::Frame *rgb = (*frames)[libfreenect2::Frame::Color];
 		libfreenect2::Frame *depth = (*frames)[libfreenect2::Frame::Depth];
 		registration->apply(rgb, depth, undistorted, registered);
-		int res = _SendFrame(rgb->sequence, registered->data, undistorted->data);
+		int res = _SendRGBDFrame(rgb->sequence, registered->data, undistorted->data,  timestamp);
 		listener->release(*frames);
 		return res;
 	}
@@ -187,6 +188,20 @@ namespace oi { namespace core { namespace rgbd {
 		return TJPF_BGRX;
 	}
 
-
+    bool LibFreenect2Streamer::supports_audio() {
+        return false;
+    }
+    
+    bool LibFreenect2Streamer::supports_body() {
+        return false;
+    }
+    
+    bool LibFreenect2Streamer::supports_bidx() {
+        return false;
+    }
+    
+    bool LibFreenect2Streamer::supports_hd() {
+        return false;
+    }
 
 } } }
